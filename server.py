@@ -4,7 +4,6 @@ import tornado.websocket
 import tornado.ioloop
 import tornado.web
 from motor.motor_tornado import MotorClient
-from bson import json_util
 from logzero import logger
 
 
@@ -34,7 +33,12 @@ class ChangesHandler(tornado.websocket.WebSocketHandler):
     @classmethod
     def on_change(cls, change):
         logger.debug(change)
-        message = f"{change['operationType']}: {change['fullDocument']['name']}"
+        operationType = change['operationType']
+
+        if operationType in ['update', 'insert', 'replace']:
+            message = f"{operationType}: {change['fullDocument']}"
+        else:
+            message = f"{change['operationType']}: {change['documentKey']}"
         ChangesHandler.send_updates(message)
 
 
@@ -50,11 +54,15 @@ async def watch(collection):
 
 
 def main():
-    client = MotorClient(os.environ["MONGO_SRV"])
-    collection = client["sample_airbnb"]["listingsAndReviews"]
+    # client = MotorClient(os.environ["MONGO_SRV"])
+    # collection = client["sample_airbnb"]["listingsAndReviews"]
+    client = MotorClient('127.0.0.1', 27017, username='ivision', password='ivSN')
+    collection = client.gerdau_scrap_classification.inspections
 
+    # create a web app whose only endpoint is a WebSocket, and start the
+    # web app on port 8000
     app = tornado.web.Application(
-        [(r"/socket", ChangesHandler), (r"/", WebpageHandler)]
+        [(r"/socket", ChangesHandler), (r"/", WebpageHandler)],
     )
 
     app.listen(8000)
