@@ -3,6 +3,7 @@ import tornado.httpserver
 import tornado.websocket
 import tornado.ioloop
 import tornado.web
+from bson import json_util
 from motor.motor_tornado import MotorClient
 from logzero import logger
 
@@ -28,7 +29,10 @@ class ChangesHandler(tornado.websocket.WebSocketHandler):
     @classmethod
     def send_updates(cls, message):
         for connected_client in cls.connected_clients:
-            connected_client.write_message(message)
+            try:
+                connected_client.write_message(message)
+            except Exception as e:
+                print(e)
 
     @classmethod
     def on_change(cls, change):
@@ -39,7 +43,8 @@ class ChangesHandler(tornado.websocket.WebSocketHandler):
             message = f"{operationType}: {change['fullDocument']}"
         else:
             message = f"{change['operationType']}: {change['documentKey']}"
-        ChangesHandler.send_updates(message)
+        change_json = json_util.dumps(change)
+        ChangesHandler.send_updates(change_json)
 
 
 change_stream = None

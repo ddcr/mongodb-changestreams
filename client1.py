@@ -1,6 +1,7 @@
 import tornado.ioloop
 import tornado.websocket
-
+from bson import json_util
+from pprint import pprint
 
 
 class WebSocketClient:
@@ -55,8 +56,9 @@ class WebSocketClient:
             print("Disconnected, reconnecting ...")
             self.connect_and_read()
         else:
-            print(f"Received: {message}")
+            message_json = json_util.loads(message)
             print("Determine image class distribution")
+            pprint(message_json)
             print("="*82)
 
 
