@@ -1,6 +1,8 @@
 import tornado.ioloop
 import tornado.websocket
-
+from bson import json_util
+from pprint import pprint
+import httpx
 
 
 class WebSocketClient:
@@ -47,7 +49,7 @@ class WebSocketClient:
                 print(f"Retrying ... {self.retries}/{self.max_retries}")
                 self.io_loop.call_later(self.retry_interval, self.connect_and_read)
             else:
-                print(f"Max attempts reached. Could not connect to server {self.url}")
+                print(f"Max attempts reached. Could not connect to server {self.url}, exiting.")
                 self.stop()
 
     def on_message(self, message):
@@ -55,9 +57,33 @@ class WebSocketClient:
             print("Disconnected, reconnecting ...")
             self.connect_and_read()
         else:
-            print(f"Received: {message}")
-            print("Resend this inspection to a different endpoint")
+            message_json = json_util.loads(message)
+            trigger_prefect_flow()
             print("="*82)
+
+
+def work(inspection):
+    print("Worker: processing inspection")
+    pprint(inspection)
+
+
+def trigger_prefect_flow():
+    headers = {
+        "Authorization": "Bearer PREFECT_API_KEY"
+    }
+    payload = {
+        "name": "ml-workflow/ml_workflow_bank_churn", #not required
+        # "parameters": {} only required if your flow needs params
+    }
+
+    deployment_id = "d9fa9afa-24c3-48dc-a718-d78abe5aa85e"
+
+    with httpx.Client() as client:
+        response = client.post(
+            f"http://localhost:4200/api/deployments/{deployment_id}/create_flow_run",
+            json=payload,
+        )
+        response.raise_for_status()
 
 
 def main():

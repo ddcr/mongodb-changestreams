@@ -1,3 +1,4 @@
+import pandas as pd
 import tornado.ioloop
 import tornado.websocket
 from bson import json_util
@@ -48,7 +49,7 @@ class WebSocketClient:
                 print(f"Retrying ... {self.retries}/{self.max_retries}")
                 self.io_loop.call_later(self.retry_interval, self.connect_and_read)
             else:
-                print(f"Max attempts reached. Could not connect to server {self.url}")
+                print(f"Max attempts reached. Could not connect to server {self.url}, exiting.")
                 self.stop()
 
     def on_message(self, message):
@@ -57,9 +58,15 @@ class WebSocketClient:
             self.connect_and_read()
         else:
             message_json = json_util.loads(message)
-            print("Determine image class distribution")
-            pprint(message_json)
+            work(message_json['fullDocument'])
             print("="*82)
+
+
+def work(inspection):
+    print("Worker: processing inspection")
+    pprint(inspection)
+    inspection_df = pd.DataFrame.from_dict(inspection, orient='index')
+    print(inspection_df)
 
 
 def main():

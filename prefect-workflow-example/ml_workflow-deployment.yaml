@@ -1,0 +1,49 @@
+###
+### A complete description of a Prefect Deployment for flow 'ml-workflow'
+###
+name: ml_workflow_bank_churn
+description: null
+version: 376155d2b9628780d5ae1beea7e706bb
+# The work queue that will handle this deployment's runs
+work_queue_name: default
+work_pool_name: null
+tags:
+- dev
+parameters: {}
+schedule: null
+schedules: []
+is_schedule_active: null
+infra_overrides: {}
+infrastructure:
+  type: process
+  env: {}
+  labels: {}
+  name: null
+  command: null
+  stream_output: true
+  working_dir: null
+  block_type_slug: process
+  _block_type_slug: process
+
+###
+### DO NOT EDIT BELOW THIS LINE
+###
+flow_name: ml-workflow
+manifest_path: null
+storage: null
+path: /home/ddcr/ivsn-ddcr-dev/gerdau_scrap_dev/mongodb-changestreams/prefect-workflow-example
+entrypoint: main.py:ml_workflow
+parameter_openapi_schema:
+  title: Parameters
+  type: object
+  properties:
+    filename:
+      default: train.csv
+      position: 0
+      title: filename
+      type: string
+  required: null
+  definitions: null
+timestamp: '2024-10-17T02:10:38.797868+00:00'
+triggers: []
+enforce_parameter_schema: null

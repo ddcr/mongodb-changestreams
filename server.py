@@ -59,8 +59,6 @@ async def watch(collection):
 
 
 def main():
-    # client = MotorClient(os.environ["MONGO_SRV"])
-    # collection = client["sample_airbnb"]["listingsAndReviews"]
     client = MotorClient('127.0.0.1', 27017, username='ivision', password='ivSN')
     collection = client.gerdau_scrap_classification.inspections
 
