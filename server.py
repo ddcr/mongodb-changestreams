@@ -1,3 +1,17 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+This server focus on just watching and relaying change stream events via WebSockets
+Uses Motor
+"""
+
+__author__ = "Domingos Rodrigues"
+__email__ = "domingos.rodrigues@inventvision.com.br"
+__copyright__ = "Copyright (C) 2024 Invent Vision"
+__license__ = "Strictly proprietary for Invent Vision."
+
+
+
 import argparse
 
 import logzero
@@ -7,7 +21,9 @@ import tornado.web
 import tornado.websocket
 from bson import json_util
 from logzero import logger
-from motor.motor_tornado import MotorClient
+from motor.motor_asyncio import AsyncIOMotorClient
+
+# from motor.motor_tornado import MotorClient
 
 
 class WebpageHandler(tornado.web.RequestHandler):
@@ -39,12 +55,6 @@ class ChangesHandler(tornado.websocket.WebSocketHandler):
     def on_change(cls, change):
         logger.debug(change)
 
-        # operationType = change['operationType']
-        # if operationType in ['update', 'insert', 'replace']:
-        #     message = f"{operationType}: {change['fullDocument']}"
-        # else:
-        #     message = f"{change['operationType']}: {change['documentKey']}"
-
         change_json = json_util.dumps(change)
         ChangesHandler.send_updates(change_json)
 
@@ -54,6 +64,7 @@ change_stream = None
 
 async def watch(collection):
     global change_stream
+    resume_token = None
 
     try:
         while True:
@@ -64,14 +75,22 @@ async def watch(collection):
             - a collection is renamed
             - a database is dropped
             """
+            resume_options = {}
+            if resume_token is not None:
+                resume_options["start_after"] = resume_token
 
-            async with collection.watch(full_document="updateLookup") as change_stream:
+            async with collection.watch(
+                full_document="updateLookup", **resume_options
+            ) as change_stream:
                 async for change in change_stream:
+                    resume_token = change.get("_id")
                     if change.get("operationType") == "invalidate":
-                        logger.warning("An 'invalidate' operation was detected. Resuming watching ...")
+                        logger.warning(
+                            f"[{collection}] An 'invalidate' operation was detected. Resuming watching ..."
+                        )
                         break  # break loop and restart watch process
-
                     ChangesHandler.on_change(change)
+
     except Exception as e:
         logger.error(f"Error watching change stream: {e}")
 
@@ -101,7 +120,15 @@ def main():
 
     args = parser.parse_args()
 
-    client = MotorClient(args.host, args.port, username="ivision", password="ivSN")
+    # client = MotorClient(args.host, args.port, username="ivision", password="ivSN")
+    client = AsyncIOMotorClient(
+        args.host,
+        args.port,
+        username="ivision",
+        password="ivSN",
+        maxPoolSize=20,
+        minPoolSize=5
+    )
 
     # create a web app whose only endpoint is a WebSocket, and start the
     # web app on port 8000
@@ -110,13 +137,14 @@ def main():
     )
     app.listen(8000)
 
-
     loop = tornado.ioloop.IOLoop.current()
 
     inspections_collection = client.gerdau_scrap_classification.inspections
     loop.add_callback(watch, inspections_collection)
 
-    gscs_classifications_collection = client.gerdau_scrap_classification.gscs_classifications
+    gscs_classifications_collection = (
+        client.gerdau_scrap_classification.gscs_classifications
+    )
     loop.add_callback(watch, gscs_classifications_collection)
 
     logger.info("Started listening ...")
