@@ -11,7 +11,6 @@ __copyright__ = "Copyright (C) 2024 Invent Vision"
 __license__ = "Strictly proprietary for Invent Vision."
 
 
-
 import argparse
 
 import logzero
@@ -26,6 +25,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 # from motor.motor_tornado import MotorClient
 
 
+# Just a page web template
 class WebpageHandler(tornado.web.RequestHandler):
     def get(self):
         self.render("templates/index.html")
@@ -49,7 +49,7 @@ class ChangesHandler(tornado.websocket.WebSocketHandler):
             try:
                 connected_client.write_message(message)
             except Exception as e:
-                print(e)
+                logger.exception(e)
 
     @classmethod
     def on_change(cls, change):
@@ -92,11 +92,11 @@ async def watch(collection):
                     ChangesHandler.on_change(change)
 
     except Exception as e:
-        logger.error(f"Error watching change stream: {e}")
+        logger.exception(f"Error watching change stream: {e}")
 
 
 def main():
-    logzero.logfile("server.log")
+    logzero.logfile("logs/server.log", maxBytes=1000000, backupCount=5)
 
     parser = argparse.ArgumentParser(
         description="WebSocket Server that proxies any new data from the Mongo change stream to connected clients",
@@ -127,7 +127,7 @@ def main():
         username="ivision",
         password="ivSN",
         maxPoolSize=20,
-        minPoolSize=5
+        minPoolSize=5,
     )
 
     # create a web app whose only endpoint is a WebSocket, and start the

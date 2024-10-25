@@ -1,0 +1,7 @@
+{
+    "_comment": "segmentation service: token is for user 'gerdau'",
+    "listening_port": 10200,
+    "host": "http://192.168.0.11",
+    "api_version": "v2.0",
+    "authToken": "522642e7979bf15078ab9a6f01cda3169488685e26b560953b98f0ba8fc6eb7f"
+}

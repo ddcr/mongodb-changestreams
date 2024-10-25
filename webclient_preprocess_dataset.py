@@ -19,10 +19,17 @@ from bson import json_util
 from logzero import logger
 from pymongo import MongoClient
 
-from utils import scrapRank, copy_file
+from automatic_annotated_bboxes import build_bboxes
+from utils import copy_file, scrapRank, AppError
 
 mongo_db = None
-DATASET_BASEDIR = os.getenv("DATASET_DIR", r"D:\ivision\automatic_retraining\dataset")
+
+if sys.platform.startswith("linux"):
+    DATASET_BASEDIR = os.getenv("DATASET_DIR", r"test_dataset")
+else:
+    DATASET_BASEDIR = os.getenv(
+        "DATASET_DIR", r"D:\ivision\automatic_retraining\dataset"
+    )
 
 
 class WebSocketClient:
@@ -61,7 +68,7 @@ class WebSocketClient:
             self.connection = future.result()
             self.retries = 0
         except Exception:
-            logger.info(f"Failed to connect to {self.url} ...")
+            logger.exception(f"Failed to connect to {self.url} ...")
 
             if self.retries < self.max_retries:
                 self.retries += 1
@@ -191,18 +198,23 @@ def add_image_to_dataset(full_document):
                 # extract image paths for the inspection points
                 for i in ai_inspection.get("inspections", []):
                     camera, inpath = i["inspectionPoint"], i["imagePath"]
-                    outpath = Path(DATASET_BASEDIR) / 'images' / camera / scrapRank[ai_classcode]
+                    outpath = (
+                        Path(DATASET_BASEDIR)
+                        / "images"
+                        / camera
+                        / scrapRank[ai_classcode]
+                    )
 
                     # The MongoDB instance is installed and running on a Windows-based machine
-                    if sys.platform.startswith('linux'):
-                        inpath = inpath.replace('\\', '/')
-                        outpath = str(outpath).replace('\\', '/')
-
+                    if sys.platform.startswith("linux"):
+                        inpath = inpath.replace("\\", "/")
                         inpath = inpath.replace("D:", "/media/ddcr/sahagun")
-                        outpath = outpath.replace("D:", "/media/ddcr/sahagun")
+                        outpath = str(outpath).replace("\\", "/")
 
                     logger.info(f"{camera}: {inpath} -> {outpath}")
-                    # add_image_to_dataset(ins)
+                    copy_file(inpath, outpath)
+                    logger.info("Segment image and automatically place bounding boxes")
+                    _ = build_bboxes(inpath)
 
             else:
                 logger.warning(
@@ -210,8 +222,12 @@ def add_image_to_dataset(full_document):
                 )
         else:
             logger.warning(f"No AI inspection found for GSCS ID: {gscs_id}")
+    except AppError as e:
+        httpReturnCode = e.code
+        responseErrorMessage = e.message
+        logger.exception(f"AppError [{httpReturnCode}]: {responseErrorMessage}")
     except Exception as e:
-        logger.error(f"Failed to process document: {e}")
+        logger.exception(f"Failed to process document: {e}")
 
 
 def connect_to_mongo(host: str, port: int):
@@ -232,7 +248,7 @@ def connect_to_mongo(host: str, port: int):
         logger.info(f"Connected to MongoDB '{host}:{port}'")
         return db
     except Exception as e:
-        logger.error(f"Failed to connect to MongoDB: {e}")
+        logger.exception(f"Failed to connect to MongoDB: {e}")
         raise
 
 
@@ -261,7 +277,9 @@ def main():
     )
 
     args = parser.parse_args()
-    logzero.logfile("webclient_preprocess_dataset.log")
+    logzero.logfile(
+        "logs/webclient_preprocess_dataset.log", maxBytes=1000000, backupCount=5
+    )
 
     mongo_db = connect_to_mongo(args.host, args.port)
 
