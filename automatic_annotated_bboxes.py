@@ -128,7 +128,7 @@ def get_train_bboxes(mask_np, threshold=0.3):
     return contours, bboxes
 
 
-def build_bboxes(image_path):
+def build_bboxes(image_path, label="", dbg_outdir=None):
     """_summary_
 
     Arguments:
@@ -157,16 +157,14 @@ def build_bboxes(image_path):
         mask_np = np.array(pil_mask, dtype=np.uint8)
 
         _, bboxes = get_train_bboxes(mask_np)
-        logger.warning(f"bboxes = {bboxes}")
 
-        pil_image_dbg = pil_image.copy()
-        pil_image_dbg = overlay_mask(pil_image_dbg, mask_np)
+        if dbg_outdir is not None:
+            pil_image_dbg = pil_image.copy()
+            pil_image_dbg = overlay_mask(pil_image_dbg, mask_np)
+            # draw_gt_boxes(image_dbg, bboxes, label=str(ground_truth))
+            draw_gt_boxes(pil_image_dbg, bboxes, label=label)
+            dbg_path = Path(dbg_outdir) / Path(image_path).stem
+            pil_image_dbg.save(f"{dbg_path}.mask.jpg")
 
-        # draw_gt_boxes(image_dbg, bboxes, label=str(ground_truth))
-        draw_gt_boxes(pil_image_dbg, bboxes)
-
-        tmp = Path(image_path).stem
-        pil_image_dbg.save(f"{tmp}.mask.jpg")
-
-        return True
+        return pil_image.size, bboxes
     raise AppError(r.status_code, "Failed to process image on segmentation service!")

@@ -12,7 +12,9 @@ from pathlib import Path, PureWindowsPath
 
 import numpy as np
 import pandas as pd
+from logzero import logger
 from PIL import Image, ImageDraw, ImageFont
+from pymongo import MongoClient
 
 DEFAULT_FONT_PATH = Path(__file__).parent / Path("assets/arial.ttf")
 
@@ -88,6 +90,42 @@ def assert_same_extensions(*args):
         raise OSError(f"Expected {str(args)} to have the same extensions")
 
 
+def count_files_in_subfolders_efficient(folder_paths):
+    """Obs: consider using this with multiprocessing if necessary
+
+    Arguments:
+        folder_paths -- _description_
+
+    Returns:
+        _description_
+    """
+    file_counts = {}  # Dictionary to store the count of files in each subfolder
+
+    for folder_path in folder_paths:
+        count = 0
+        # Using os.scandir() for better performance
+        with os.scandir(folder_path) as entries:
+            for entry in entries:
+                if entry.is_file():  # Check if the entry is a file
+                    count += 1
+        file_counts[folder_path] = count  # Store the count in the dictionary
+
+    return file_counts
+
+
+def count_files_in_subfolders(folder_paths):
+    file_counts = {}  # Dictionary to store the count of files in each subfolder
+
+    for folder_path in folder_paths:
+        folder = Path(folder_path)
+
+        # Count files in the current subfolder
+        file_count = sum(1 for item in folder.glob('*') if item.is_file())
+        file_counts[folder_path] = file_count  # Store the count in the dictionary
+
+    return file_counts
+
+
 def copy_file(inpath, outpath, check_ext=False):
     if check_ext and os.path.splitext(outpath)[1]:
         assert_same_extensions(inpath, outpath)
@@ -99,6 +137,20 @@ def copy_file(inpath, outpath, check_ext=False):
         shutil.copy(inpath, outpath)
     except shutil.SameFileError:
         pass
+
+
+def addAnnotation(bboxes, filetxt, img_shape, gt_id):
+    img_width, img_height = img_shape
+    with open(filetxt, "w") as annotation_file:
+        for bbox in bboxes:
+            x_center = (bbox[0] + (bbox[2] - bbox[0]) / 2) / img_width
+            y_center = (bbox[1] + (bbox[3] - bbox[1]) / 2) / img_height
+            width = (bbox[2] - bbox[0]) / img_width
+            height = (bbox[3] - bbox[1]) / img_height
+            if gt_id != -1:
+                annotation_file.write(
+                    f"{gt_id} {x_center} {y_center} {width} {height}\n"
+                )
 
 
 def load_configs(parPath: str = "config.json"):  # Load configurations
@@ -164,7 +216,34 @@ def overlay_mask(image, seg_mask):
     return Image.fromarray(np.uint8(img))
 
 
+def connect_to_mongo(host: str, port: int, database='gerdau_scrap_classification'):
+    """
+    Establishes a connection to the MongoDB instance.
+    Returns the connected database client.
+    """
+    try:
+        mongo_client = MongoClient(
+            host,
+            port,
+            username=os.getenv("MONGO_INITDB_ROOT_USERNAME", "ivision"),
+            password=os.getenv("MONGO_INITDB_ROOT_PASSWORD", "ivSN"),
+            maxPoolSize=20,
+            minPoolSize=5,
+        )
+        db = mongo_client[database]
+        logger.info(f"Connected to MongoDB '{host}:{port}'; database = '{database}'")
+        return db
+    except Exception as e:
+        logger.exception(f"Failed to connect to MongoDB: {e}")
+        raise
+
+
 configs = load_configs()
 scrapRankDF = load_scrap_rank("classes_info.csv")
-scrapRank = scrapRankDF.set_index("code")["name"].to_dict()
-authToken = getConfig
+# scrapRank = scrapRankDF.set_index("code")["name"].to_dict()
+scrapRank = {row["code"]: (index, row["name"]) for index, row in scrapRankDF.iterrows()}
+
+
+if __name__ == "__main__":
+    print(scrapRankDF)
+    print(scrapRank)

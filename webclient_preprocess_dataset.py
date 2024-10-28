@@ -17,18 +17,17 @@ import tornado.ioloop
 import tornado.websocket
 from bson import json_util
 from logzero import logger
-from pymongo import MongoClient
 
 from automatic_annotated_bboxes import build_bboxes
-from utils import copy_file, scrapRank, AppError
+from utils import AppError, addAnnotation, connect_to_mongo, copy_file, scrapRank
 
 mongo_db = None
 
 if sys.platform.startswith("linux"):
-    DATASET_BASEDIR = os.getenv("DATASET_DIR", r"test_dataset")
+    DATASET_BASEDIR = os.getenv("DATASET_DIR", r"dataset_in_preparation")
 else:
     DATASET_BASEDIR = os.getenv(
-        "DATASET_DIR", r"D:\ivision\automatic_retraining\dataset"
+        "DATASET_DIR", r"D:\ivision\automatic_retraining\dataset_in_preparation"
     )
 
 
@@ -195,26 +194,50 @@ def add_image_to_dataset(full_document):
                     f"[AI inspection] - {inspection_id} | Action: add to DataSet"
                 )
 
+                ground_truth_index, ground_truth_name = scrapRank[manual_classcode]
+
                 # extract image paths for the inspection points
                 for i in ai_inspection.get("inspections", []):
-                    camera, inpath = i["inspectionPoint"], i["imagePath"]
-                    outpath = (
+                    camera, inpath_str = i["inspectionPoint"], i["imagePath"]
+                    outdir = (
                         Path(DATASET_BASEDIR)
                         / "images"
                         / camera
-                        / scrapRank[ai_classcode]
+                        / ground_truth_name
                     )
+                    annot_dir = Path(str(outdir).replace("/images/", "/labels/"))
 
                     # The MongoDB instance is installed and running on a Windows-based machine
                     if sys.platform.startswith("linux"):
-                        inpath = inpath.replace("\\", "/")
-                        inpath = inpath.replace("D:", "/media/ddcr/sahagun")
-                        outpath = str(outpath).replace("\\", "/")
+                        inpath_str = inpath_str.replace("\\", "/")
+                        inpath_str = inpath_str.replace("D:", "/media/ddcr/sahagun")
+                        outdir = str(outdir).replace("\\", "/")
 
-                    logger.info(f"{camera}: {inpath} -> {outpath}")
-                    copy_file(inpath, outpath)
-                    logger.info("Segment image and automatically place bounding boxes")
-                    _ = build_bboxes(inpath)
+                    ###################################
+                    #
+                    #    Standard Folder structure
+                    #
+                    ###################################
+                    # add this image and its associated annotated bounding boxes
+                    logger.info(f"{camera}: {inpath_str} -> {outdir}")
+                    copy_file(inpath_str, outdir)
+
+                    logger.info("Segment image and automatically fit bounding boxes")
+                    img_shape, bboxes_list = build_bboxes(
+                        inpath_str,
+                        label=ground_truth_name,
+                        dbg_outdir=outdir,
+                    )
+
+                    # Add annotations to folder
+                    annot_dir.mkdir(parents=True, exist_ok=True)
+                    annot_file = annot_dir / Path(inpath_str).name
+                    annot_file = annot_file.with_suffix('.txt')
+                    logger.debug(f"annot_file = {annot_file}")
+                    logger.debug(f"img_shape = {img_shape} => {ground_truth_index} {bboxes_list}")
+                    addAnnotation(bboxes_list, annot_file, img_shape, ground_truth_index)
+
+                    # createFiftyOneImageClassificationDataset()
 
             else:
                 logger.warning(
@@ -227,29 +250,7 @@ def add_image_to_dataset(full_document):
         responseErrorMessage = e.message
         logger.exception(f"AppError [{httpReturnCode}]: {responseErrorMessage}")
     except Exception as e:
-        logger.exception(f"Failed to process document: {e}")
-
-
-def connect_to_mongo(host: str, port: int):
-    """
-    Establishes a connection to the MongoDB instance.
-    Returns the connected database client.
-    """
-    try:
-        mongo_client = MongoClient(
-            host,
-            port,
-            username=os.getenv("MONGO_INITDB_ROOT_USERNAME", "ivision"),
-            password=os.getenv("MONGO_INITDB_ROOT_PASSWORD", "ivSN"),
-            maxPoolSize=20,
-            minPoolSize=5,
-        )
-        db = mongo_client.gerdau_scrap_classification
-        logger.info(f"Connected to MongoDB '{host}:{port}'")
-        return db
-    except Exception as e:
-        logger.exception(f"Failed to connect to MongoDB: {e}")
-        raise
+        logger.exception(f"Failure during mongo document processing: {e}")
 
 
 def main():
