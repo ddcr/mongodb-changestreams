@@ -10,6 +10,7 @@ __license__ = "Strictly proprietary for Invent Vision."
 import argparse
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import logzero
@@ -19,7 +20,14 @@ from bson import json_util
 from logzero import logger
 
 from automatic_annotated_bboxes import build_bboxes
-from utils import AppError, addAnnotation, connect_to_mongo, copy_file, scrapRank
+from utils import (
+    AppError,
+    add_annotation,
+    connect_to_mongo,
+    copy_file,
+    count_files_in_subfolders,
+    scrapRank,
+)
 
 mongo_db = None
 
@@ -38,6 +46,7 @@ class WebSocketClient:
         url="ws://127.0.0.1:8000/socket",
         max_retries=10,
         retry_interval=3,
+        file_path="images.csv",
     ):
         self.connection = None
         self.io_loop = io_loop
@@ -45,12 +54,35 @@ class WebSocketClient:
         self.max_retries = max_retries
         self.retry_interval = retry_interval
         self.retries = 0
+        self.file_path = DATASET_BASEDIR / Path(file_path)
+        self.file = None
 
     def start(self):
+        # make sure DATASET_BASEDIR exists
+        Path(DATASET_BASEDIR).mkdir(parents=True, exist_ok=True)
+        self.open_file()
         self.connect_and_read()
 
     def stop(self):
+        self.close_file()
         self.io_loop.stop()
+
+    def open_file(self):
+        try:
+            self.file = open(self.file_path, "a")
+            header = "path,created_at,camera,ai_class,human_class"
+            self.file.write(f"{header}\n")
+            logger.info(f"File opened for appending data: {self.file_path}")
+        except Exception as e:
+            logger.exception(f"Failed to open file {self.file_path}: {e}")
+
+    def close_file(self):
+        if self.file:
+            try:
+                self.file.close()
+                logger.info(f"File closed: {self.file_path}")
+            except Exception as e:
+                logger.exception(f"Failed to close file {self.file_path}: {e}")
 
     def connect_and_read(self):
         logger.info("Reading ...")
@@ -90,11 +122,29 @@ class WebSocketClient:
             logger.info("Disconnected, reconnecting ...")
             self.connect_and_read()
         else:
-            message_json = json_util.loads(message)
-            parse_change_stream_event(message_json)
+            try:
+                message_json = json_util.loads(message)
+                parse_change_stream_event(message_json, fd=self.file)
+                logger.info(
+                    "Inspection successfully completed and incorporated into the dataset."
+                )
+            except Exception as e:
+                logger.exception(
+                    f"An error occurred while parsing the change stream event: {e}"
+                )
+            finally:
+                # file_cnts = count_files_in_subfolders([])
+                pass
+
+    def signal_to_ml_workflow(self, message):
+        if self.connection:
+            try:
+                self.connection.write_message(json_util.dumps(message))
+            except Exception as e:
+                logger.exception(f"Failed to trigger the ML workflow: {e}")
 
 
-def parse_change_stream_event(change_event):
+def parse_change_stream_event(change_event, fd=None):
     operation_type = change_event.get("operationType")
     event_id = change_event.get("_id")
     event_docuid = change_event.get("documentKey")
@@ -135,7 +185,10 @@ def parse_change_stream_event(change_event):
                 logger.debug(
                     f"[GSCI update] - {gscs_id} | Action: Relay to function 'add_image_to_dataset'"
                 )
-                add_image_to_dataset(full_document)
+                #########################
+                #  Add image to dataset
+                #########################
+                add_image_to_dataset(full_document, fd=fd)
             else:
                 logger.debug(
                     f"[GSCS {operation_type}] - {gscs_id} | Action: 'operationType' not handled"
@@ -161,6 +214,7 @@ def parse_change_stream_event(change_event):
             logger.warning(
                 f"[AI inspection {operation_type}] - {inspection_id} | Unexpected operation type"
             )
+
     else:
         logger.error(
             "Change Stream Error: Unknown document type detected."
@@ -168,7 +222,17 @@ def parse_change_stream_event(change_event):
         )
 
 
-def add_image_to_dataset(full_document):
+def append_image_path_to_file(line, fd=None):
+    if fd:
+        try:
+            fd.write(f"{line}\n")
+            fd.flush()
+            logger.info(f"Append image info: {line}")
+        except Exception as e:
+            logger.exception(f"Failed to add image info: {e}")
+
+
+def add_image_to_dataset(full_document, fd=None):
     """_summary_
 
     Arguments:
@@ -185,64 +249,80 @@ def add_image_to_dataset(full_document):
         ai_inspection = mongo_db.inspections.find_one({"gscs_id": gscs_id})
         if ai_inspection:
             inspection_id = ai_inspection.get("_id")
-            ai_classcode = (
-                ai_inspection.get("result", {}).get("detection", {}).get("classCode")
-            )
+            ai_label = ai_inspection.get("result", {}).get("detection", {}).get("class")
 
-            if manual_classcode == ai_classcode:
+            # TODO: Accumulate all images regardless of classification aggrement
+            # TODO: between AI and human classifications
+            # ai_classcode = (
+            #     ai_inspection.get("result", {}).get("detection", {}).get("classCode")
+            # )
+            # if manual_classcode == ai_classcode:
+            logger.debug(f"[AI inspection] - {inspection_id} | Action: add to DataSet")
+
+            ground_truth_index, ground_truth_name = scrapRank[manual_classcode]
+
+            # extract image paths for the inspection points
+            for i in ai_inspection.get("inspections", []):
+                camera, inpath_str = i["inspectionPoint"], i["imagePath"]
+                outdir = Path(DATASET_BASEDIR) / "images" / ground_truth_name / camera
+                annot_dir = Path(str(outdir).replace("/images/", "/labels/"))
+                masks_dir = Path(str(outdir).replace("/images/", "/masks/"))
+
+                # The MongoDB instance is installed and running on a Windows-based machine
+                if sys.platform.startswith("linux"):
+                    inpath_str = inpath_str.replace("\\", "/")
+                    inpath_str = inpath_str.replace("D:", "/media/ddcr/sahagun")
+                    outdir = str(outdir).replace("\\", "/")
+
+                ###################################
+                #
+                #    Standard Folder structure
+                #
+                ###################################
+                # add this image and its associated annotated bounding boxes
+                logger.info(f"{camera}: {inpath_str} -> {outdir}")
+                copy_file(inpath_str, outdir)
+
+                logger.info("Segment image and automatically fit bounding boxes")
+
+                dbg_outdir = Path(str(outdir).replace("/images/", "/debug/"))
+                dbg_outdir.mkdir(parents=True, exist_ok=True)
+
+                img_shape, bboxes_list, mask_pil = build_bboxes(
+                    inpath_str,
+                    label=ground_truth_name,
+                    dbg_outdir=dbg_outdir,
+                )
+
+                # Add segmentation masks to folder
+                masks_dir.mkdir(parents=True, exist_ok=True)
+                mask_file = masks_dir / Path(inpath_str).name
+                mask_file = mask_file.with_suffix(".png")
+                mask_pil.save(mask_file)
+
+                # Add annotations to folder
+                annot_dir.mkdir(parents=True, exist_ok=True)
+                annot_file = annot_dir / Path(inpath_str).name
+                annot_file = annot_file.with_suffix(".txt")
+                logger.debug(f"annot_file = {annot_file}")
                 logger.debug(
-                    f"[AI inspection] - {inspection_id} | Action: add to DataSet"
+                    f"img_shape = {img_shape} => {ground_truth_index} {bboxes_list}"
                 )
+                add_annotation(bboxes_list, annot_file, img_shape, ground_truth_index)
 
-                ground_truth_index, ground_truth_name = scrapRank[manual_classcode]
-
-                # extract image paths for the inspection points
-                for i in ai_inspection.get("inspections", []):
-                    camera, inpath_str = i["inspectionPoint"], i["imagePath"]
-                    outdir = (
-                        Path(DATASET_BASEDIR)
-                        / "images"
-                        / camera
-                        / ground_truth_name
-                    )
-                    annot_dir = Path(str(outdir).replace("/images/", "/labels/"))
-
-                    # The MongoDB instance is installed and running on a Windows-based machine
-                    if sys.platform.startswith("linux"):
-                        inpath_str = inpath_str.replace("\\", "/")
-                        inpath_str = inpath_str.replace("D:", "/media/ddcr/sahagun")
-                        outdir = str(outdir).replace("\\", "/")
-
-                    ###################################
-                    #
-                    #    Standard Folder structure
-                    #
-                    ###################################
-                    # add this image and its associated annotated bounding boxes
-                    logger.info(f"{camera}: {inpath_str} -> {outdir}")
-                    copy_file(inpath_str, outdir)
-
-                    logger.info("Segment image and automatically fit bounding boxes")
-                    img_shape, bboxes_list = build_bboxes(
-                        inpath_str,
-                        label=ground_truth_name,
-                        dbg_outdir=outdir,
-                    )
-
-                    # Add annotations to folder
-                    annot_dir.mkdir(parents=True, exist_ok=True)
-                    annot_file = annot_dir / Path(inpath_str).name
-                    annot_file = annot_file.with_suffix('.txt')
-                    logger.debug(f"annot_file = {annot_file}")
-                    logger.debug(f"img_shape = {img_shape} => {ground_truth_index} {bboxes_list}")
-                    addAnnotation(bboxes_list, annot_file, img_shape, ground_truth_index)
-
-                    # createFiftyOneImageClassificationDataset()
-
-            else:
-                logger.warning(
-                    f"[AI inspection] - {inspection_id} | AI and human classifications differ"
+                # Add image info to external file
+                dataset_relative_dir = Path(outdir).relative_to(DATASET_BASEDIR)
+                relpath = dataset_relative_dir / Path(inpath_str).name
+                created_at = datetime.strptime(
+                    ai_inspection.get("date"), "%Y-%m-%dT%H:%M:%S.%fZ"
                 )
+                image_lineinfo = f"{str(relpath)},{created_at},{camera},{ai_label},{ground_truth_name}"
+                append_image_path_to_file(image_lineinfo, fd=fd)
+
+            # else:
+            #     logger.warning(
+            #         f"[AI inspection] - {inspection_id} | AI and human classifications differ"
+            #     )
         else:
             logger.warning(f"No AI inspection found for GSCS ID: {gscs_id}")
     except AppError as e:

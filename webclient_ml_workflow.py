@@ -1,12 +1,33 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+""" """
+
+__author__ = "Domingos Rodrigues"
+__email__ = "domingos.rodrigues@inventvision.com.br"
+__copyright__ = "Copyright (C) 2024 Invent Vision"
+__license__ = "Strictly proprietary for Invent Vision."
+
+import argparse
+import uuid
+from pprint import pprint
+
+import httpx
 import tornado.ioloop
 import tornado.websocket
 from bson import json_util
-from pprint import pprint
-import httpx
+from logzero import logger
+
+deployment_id = None
 
 
 class WebSocketClient:
-    def __init__(self, io_loop, url="ws://127.0.0.1:8000/socket", max_retries=10, retry_interval=3):
+    def __init__(
+        self,
+        io_loop,
+        url="ws://127.0.0.1:8000/socket",
+        max_retries=10,
+        retry_interval=3,
+    ):
         self.connection = None
         self.io_loop = io_loop
         self.url = url
@@ -21,62 +42,55 @@ class WebSocketClient:
         self.io_loop.stop()
 
     def connect_and_read(self):
-        print("Reading ...")
+        logger.info("Reading ...")
         tornado.websocket.websocket_connect(
             url=self.url,
-            callback = self.maybe_retry_connection,
-            on_message_callback = self.on_message,
-            ping_interval = 10,
-            ping_timeout = 30
+            callback=self.maybe_retry_connection,
+            on_message_callback=self.on_message,
+            ping_interval=10,
+            ping_timeout=30,
         )
 
     def original_maybe_retry_connection(self, future):
         try:
             self.connection = future.result()
-        except:
-            print("Could not reconnect, retrying ...")
+        except Exception as e:
+            logger.exception("Could not reconnect, retrying ...")
             self.io_loop.call_later(self.retry_interval, self.connect_and_read)
 
     def maybe_retry_connection(self, future):
         try:
             self.connection = future.result()
             self.retries = 0
-        except Exception as e:
-            print(f"Failed to connect to {self.url} ...")
+        except Exception:
+            logger.exception(f"Failed to connect to {self.url} ...")
 
             if self.retries < self.max_retries:
                 self.retries += 1
-                print(f"Retrying ... {self.retries}/{self.max_retries}")
+                logger.info(f"Retrying ... {self.retries}/{self.max_retries}")
                 self.io_loop.call_later(self.retry_interval, self.connect_and_read)
             else:
-                print(f"Max attempts reached. Could not connect to server {self.url}, exiting.")
+                logger.info(
+                    f"Max attempts reached. Could not connect to server {self.url}, exiting."
+                )
                 self.stop()
 
     def on_message(self, message):
         if message is None:
-            print("Disconnected, reconnecting ...")
+            logger.info("Disconnected, reconnecting ...")
             self.connect_and_read()
         else:
             message_json = json_util.loads(message)
-            trigger_prefect_flow()
-            print("="*82)
-
-
-def work(inspection):
-    print("Worker: processing inspection")
-    pprint(inspection)
+            logger.info("Trigger the ML workflow ...")
+            # trigger_prefect_flow()
 
 
 def trigger_prefect_flow():
-    headers = {
-        "Authorization": "Bearer PREFECT_API_KEY"
-    }
+    headers = {"Authorization": "Bearer PREFECT_API_KEY"}
     payload = {
-        "name": "ml-workflow/ml_workflow_bank_churn", #not required
+        "name": "ml-workflow/ml_workflow_bank_churn",  # not required
         # "parameters": {} only required if your flow needs params
     }
-
-    deployment_id = "d9fa9afa-24c3-48dc-a718-d78abe5aa85e"
 
     with httpx.Client() as client:
         response = client.post(
@@ -86,7 +100,29 @@ def trigger_prefect_flow():
         response.raise_for_status()
 
 
+def valid_uuid(uuid_string):
+    try:
+        # Attempt to create a UUID object to validate the format
+        return str(uuid.UUID(uuid_string))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Invalid UUID: '{uuid_string}'")
+
+
 def main():
+    global deployment_id
+
+    parser = argparse.ArgumentParser(
+        description="WebClient that triggers a Prefect flow via API call", add_help=True
+    )
+
+    parser.add_argument(
+        "--id", type=valid_uuid, required=True, help="ID of Prefect deployment workflow"
+    )
+
+    args = parser.parse_args()
+
+    deployment_id = args.id
+
     io_loop = tornado.ioloop.IOLoop.current()
     client = WebSocketClient(io_loop)
     io_loop.add_callback(client.start)

@@ -164,7 +164,7 @@ def build_bboxes(image_path, label="", dbg_outdir=None):
             # draw_gt_boxes(image_dbg, bboxes, label=str(ground_truth))
             draw_gt_boxes(pil_image_dbg, bboxes, label=label)
             dbg_path = Path(dbg_outdir) / Path(image_path).stem
-            pil_image_dbg.save(f"{dbg_path}.mask.jpg")
+            pil_image_dbg.save(f"{dbg_path}.debug.jpg")
 
-        return pil_image.size, bboxes
+        return pil_image.size, bboxes, pil_mask
     raise AppError(r.status_code, "Failed to process image on segmentation service!")

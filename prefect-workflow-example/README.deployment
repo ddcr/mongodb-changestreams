@@ -1,0 +1,1 @@
+prefect deployment build main.py:ml_workflow -n 'ml_workflow_bank_churn' -a --tag dev

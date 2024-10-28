@@ -12,6 +12,7 @@ __license__ = "Strictly proprietary for Invent Vision."
 
 import argparse
 import random
+import time
 from datetime import datetime, timezone
 
 from logzero import logger
@@ -148,9 +149,7 @@ def updateGSCSClassification(gscs_id, gscs_info, mongo_db):
         },
         "$inc": {"retry_sync_count": 1},
     }
-    mongo_db.gscs_classifications.update_one(
-        {"gscs_id": gscs_id}, update_data
-    )
+    mongo_db.gscs_classifications.update_one({"gscs_id": gscs_id}, update_data)
 
 
 def update_inspections(mongo_db, force=False):
@@ -182,6 +181,7 @@ def update_inspections(mongo_db, force=False):
             # logger.info(f"gscs_info[{gscs_id}] = {gscs_info}")
 
             updateGSCSClassification(gscs_id, gscs_info, mongo_db)
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":
@@ -221,7 +221,7 @@ transferring a subset of inspection records between different MongoDB environmen
     parser.add_argument(
         "--update",
         action="store_true",
-        default=True,
+        default=False,
         help="Update inspections with GSCS info available [default: %(default)s]?",
     )
 

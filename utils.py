@@ -139,7 +139,7 @@ def copy_file(inpath, outpath, check_ext=False):
         pass
 
 
-def addAnnotation(bboxes, filetxt, img_shape, gt_id):
+def add_annotation(bboxes, filetxt, img_shape, gt_id):
     img_width, img_height = img_shape
     with open(filetxt, "w") as annotation_file:
         for bbox in bboxes:
