@@ -54,7 +54,7 @@ class WebSocketClient:
         self.max_retries = max_retries
         self.retry_interval = retry_interval
         self.retries = 0
-        self.file_path = DATASET_BASEDIR / Path(file_path)
+        self.file_path = Path(DATASET_BASEDIR) / file_path
         self.file = None
 
     def start(self):
@@ -70,8 +70,10 @@ class WebSocketClient:
     def open_file(self):
         try:
             self.file = open(self.file_path, "a")
-            header = "path,created_at,camera,ai_class,human_class"
-            self.file.write(f"{header}\n")
+            if self.file.tell() == 0:
+                header = "path,created_at,camera,ai_class,human_class"
+                self.file.write(f"{header}\n")
+            self.file.flush()
             logger.info(f"File opened for appending data: {self.file_path}")
         except Exception as e:
             logger.exception(f"Failed to open file {self.file_path}: {e}")
@@ -125,16 +127,22 @@ class WebSocketClient:
             try:
                 message_json = json_util.loads(message)
                 parse_change_stream_event(message_json, fd=self.file)
-                logger.info(
-                    "Inspection successfully completed and incorporated into the dataset."
-                )
             except Exception as e:
                 logger.exception(
                     f"An error occurred while parsing the change stream event: {e}"
                 )
             finally:
-                # file_cnts = count_files_in_subfolders([])
-                pass
+                # check if dataset is ready for training
+                if not message_json.get("trigger"):  # bypass ML
+                    res = self.is_dataset_ready()
+                    if res:
+                        self.signal_to_ml_workflow({"trigger": "train_ml"})
+                    else:
+                        logger.warning("Dataset is not yet ready for training")
+
+    def is_dataset_ready(self):
+        """Count images per class"""
+        return False
 
     def signal_to_ml_workflow(self, message):
         if self.connection:
@@ -148,12 +156,13 @@ def parse_change_stream_event(change_event, fd=None):
     operation_type = change_event.get("operationType")
     event_id = change_event.get("_id")
     event_docuid = change_event.get("documentKey")
-    logger.debug(
-        f"Worker: received Change Stream event:\n"
-        f"{'ID:':<10} {event_id}\n"
-        f"{'OP:':<10} {operation_type}\n"
-        f"{'Doc Mongo ID:':<10} {event_docuid}"
-    )
+    if event_id:
+        logger.debug(
+            f"Worker: received Change Stream event:\n"
+            f"{'ID:':<10} {event_id}\n"
+            f"{'OP:':<10} {operation_type}\n"
+            f"{'Doc Mongo ID:':<10} {event_docuid}"
+        )
 
     # verify type of document
     full_document = change_event.get("fullDocument")
@@ -163,9 +172,8 @@ def parse_change_stream_event(change_event, fd=None):
         if operation_type == "delete":
             logger.debug(f"Document with ID {event_docuid} was deleted.")
         else:
-            logger.error(
-                "This change stream event involves no 'fullDocument'.\n"
-                f"Operation: {operation_type}"
+            logger.warning(
+                f"This change stream event involves no 'fullDocument' [OP: {operation_type}]."
             )
         return
 
@@ -304,18 +312,12 @@ def add_image_to_dataset(full_document, fd=None):
                 annot_dir.mkdir(parents=True, exist_ok=True)
                 annot_file = annot_dir / Path(inpath_str).name
                 annot_file = annot_file.with_suffix(".txt")
-                logger.debug(f"annot_file = {annot_file}")
-                logger.debug(
-                    f"img_shape = {img_shape} => {ground_truth_index} {bboxes_list}"
-                )
                 add_annotation(bboxes_list, annot_file, img_shape, ground_truth_index)
 
                 # Add image info to external file
                 dataset_relative_dir = Path(outdir).relative_to(DATASET_BASEDIR)
                 relpath = dataset_relative_dir / Path(inpath_str).name
-                created_at = datetime.strptime(
-                    ai_inspection.get("date"), "%Y-%m-%dT%H:%M:%S.%fZ"
-                )
+                created_at = ai_inspection.get("date")
                 image_lineinfo = f"{str(relpath)},{created_at},{camera},{ai_label},{ground_truth_name}"
                 append_image_path_to_file(image_lineinfo, fd=fd)
 
@@ -323,6 +325,10 @@ def add_image_to_dataset(full_document, fd=None):
             #     logger.warning(
             #         f"[AI inspection] - {inspection_id} | AI and human classifications differ"
             #     )
+
+            logger.info(
+                "Inspection successfully completed and incorporated into the dataset."
+            )
         else:
             logger.warning(f"No AI inspection found for GSCS ID: {gscs_id}")
     except AppError as e:

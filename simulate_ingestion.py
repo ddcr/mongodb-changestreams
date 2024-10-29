@@ -120,7 +120,7 @@ def inject_inspections(sample, mongo_db):
     parGscsId = 1000000
     for class_name, insp_list in sample.items():
         for insp in insp_list:
-            logger.info(f"insp = {type(insp)}")
+            logger.info(f"inject inspection: {insp['_id']}")
             insp["gscs_id"] = parGscsId
             res = mongo_db.inspections.insert_one(insp)
             if res.acknowledged:
@@ -181,7 +181,7 @@ def update_inspections(mongo_db, force=False):
             # logger.info(f"gscs_info[{gscs_id}] = {gscs_info}")
 
             updateGSCSClassification(gscs_id, gscs_info, mongo_db)
-        time.sleep(0.5)
+        time.sleep(3)
 
 
 if __name__ == "__main__":
@@ -222,14 +222,22 @@ transferring a subset of inspection records between different MongoDB environmen
         "--update",
         action="store_true",
         default=False,
-        help="Update inspections with GSCS info available [default: %(default)s]?",
+        help="Simulate GSCS database integration by updating 'gscs_info' for each inspection record [default: %(default)s]?",
     )
 
     parser.add_argument(
         "--force",
         action="store_true",
         default=True,
-        help="Force updating the GSCS info of inspections for simulation [default: %(default)s]?",
+        help="Force refresh of GSCS info for inspections [default: %(default)s]?",
+    )
+
+    parser.add_argument(
+        "--count",
+        type=int,
+        required=False,
+        default=10,
+        help="Number of inspections per class"
     )
 
     args = parser.parse_args()
@@ -241,7 +249,7 @@ transferring a subset of inspection records between different MongoDB environmen
         logger.info(f"Start collecting sample from {args.mongo_url_source}")
         mongo_src_host, mongo_src_port = args.mongo_url_source.split(":")
         mongo_db_source = connect_to_mongo(mongo_src_host, int(mongo_src_port))
-        samples_dict = getRandomInspectionsFromEachClass(mongo_db_source)
+        samples_dict = getRandomInspectionsFromEachClass(mongo_db_source, count=args.count)
 
         logger.info(f"Migrate sample to {args.mongo_url_dest}")
         inject_inspections(samples_dict, db_destination)

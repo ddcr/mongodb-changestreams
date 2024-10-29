@@ -81,8 +81,9 @@ class WebSocketClient:
             self.connect_and_read()
         else:
             message_json = json_util.loads(message)
-            logger.info("Trigger the ML workflow ...")
-            # trigger_prefect_flow()
+            if message_json.get("trigger") == "start_ml":
+                logger.info("Trigger the ML workflow ...")
+                # trigger_prefect_flow()
 
 
 def trigger_prefect_flow():

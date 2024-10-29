@@ -43,6 +43,13 @@ class ChangesHandler(tornado.websocket.WebSocketHandler):
     def on_close(self):
         ChangesHandler.connected_clients.remove(self)
 
+    def on_message(self, message):
+        """Broadcast the message to other clients"""
+        client_message = json_util.loads(message)
+        if client_message.get("trigger") == "start_ml":
+            self.relay_trigger_to_clients(client_message)
+            logger.warning("A trigger warning 'start_ml' was relayed")
+
     @classmethod
     def send_updates(cls, message):
         for connected_client in cls.connected_clients:
@@ -57,6 +64,17 @@ class ChangesHandler(tornado.websocket.WebSocketHandler):
 
         change_json = json_util.dumps(change)
         ChangesHandler.send_updates(change_json)
+
+    def relay_trigger_to_clients(self, message):
+        # Prepare the message to be relayed
+        relayed_message = json_util.dumps(message)
+        # Send the message to all connected clients except the sender
+        for client in self.connected_clients:
+            if client != self:
+                try:
+                    client.write_message(relayed_message)
+                except Exception as e:
+                    logger.exception(f"Failed to relay message to client: {e}")
 
 
 change_stream = None
