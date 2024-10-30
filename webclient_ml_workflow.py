@@ -8,6 +8,8 @@ __copyright__ = "Copyright (C) 2024 Invent Vision"
 __license__ = "Strictly proprietary for Invent Vision."
 
 import argparse
+import os
+import sys
 import uuid
 from pprint import pprint
 
@@ -18,6 +20,18 @@ from bson import json_util
 from logzero import logger
 
 deployment_id = None
+
+script_path = os.path.abspath(__file__)
+WORK_DIR = os.path.dirname(script_path)
+
+if sys.platform.startswith("linux"):
+    DATASET_BASEDIR = os.getenv(
+        "DATASET_DIR", os.path.join(WORK_DIR, "dataset_in_preparation")
+    )
+else:
+    DATASET_BASEDIR = os.getenv(
+        "DATASET_DIR", r"D:\ivision\automatic_retraining\dataset_in_preparation"
+    )
 
 
 class WebSocketClient:
@@ -83,22 +97,32 @@ class WebSocketClient:
             message_json = json_util.loads(message)
             if message_json.get("trigger") == "start_ml":
                 logger.info("Trigger the ML workflow ...")
-                # trigger_prefect_flow()
+                trigger_prefect_flow()
 
 
 def trigger_prefect_flow():
     headers = {"Authorization": "Bearer PREFECT_API_KEY"}
     payload = {
-        "name": "ml-workflow/ml_workflow_bank_churn",  # not required
-        # "parameters": {} only required if your flow needs params
+        "name": "testing-ivision-automl",  # not required
+        "parameters": {"dset_inputdir": DATASET_BASEDIR},
     }
 
-    with httpx.Client() as client:
-        response = client.post(
-            f"http://localhost:4200/api/deployments/{deployment_id}/create_flow_run",
-            json=payload,
+    try:
+        with httpx.Client() as client:
+            response = client.post(
+                f"http://localhost:4200/api/deployments/{deployment_id}/create_flow_run",
+                json=payload,
+            )
+            response.raise_for_status()
+
+            flow_run_info = response.json()
+            logger.debug(f"Triggered the ML flow run: {flow_run_info}")
+    except httpx.HTTPStatusError as e:
+        logger.exception(
+            f"HTTP error occurred: {e.response.status_code} - {e.response.text}"
         )
-        response.raise_for_status()
+    except Exception as e:
+        logger.exception(f"An error occurred: {e}")
 
 
 def valid_uuid(uuid_string):

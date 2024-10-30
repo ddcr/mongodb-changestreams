@@ -230,7 +230,7 @@ def parse_change_stream_event(change_event, fd=None):
         )
 
 
-def append_image_path_to_file(line, fd=None):
+def append_image_path_to_csv(line, fd=None):
     if fd:
         try:
             fd.write(f"{line}\n")
@@ -289,7 +289,10 @@ def add_image_to_dataset(full_document, fd=None):
                 ###################################
                 # add this image and its associated annotated bounding boxes
                 logger.info(f"{camera}: {inpath_str} -> {outdir}")
-                copy_file(inpath_str, outdir)
+
+                inpath = Path(inpath_str)
+                if not (inpath.exists() and inpath.is_file()):
+                    raise Exception(f"Missing image file: {inpath_str}")
 
                 logger.info("Segment image and automatically fit bounding boxes")
 
@@ -302,24 +305,38 @@ def add_image_to_dataset(full_document, fd=None):
                     dbg_outdir=dbg_outdir,
                 )
 
-                # Add segmentation masks to folder
-                masks_dir.mkdir(parents=True, exist_ok=True)
-                mask_file = masks_dir / Path(inpath_str).name
-                mask_file = mask_file.with_suffix(".png")
-                mask_pil.save(mask_file)
 
-                # Add annotations to folder
-                annot_dir.mkdir(parents=True, exist_ok=True)
-                annot_file = annot_dir / Path(inpath_str).name
-                annot_file = annot_file.with_suffix(".txt")
-                add_annotation(bboxes_list, annot_file, img_shape, ground_truth_index)
+                if len(bboxes_list) > 0:
+                    # Add segmentation mask to folder
+                    masks_dir.mkdir(parents=True, exist_ok=True)
+                    mask_file = masks_dir / Path(inpath_str).name
+                    mask_file = mask_file.with_suffix(".png")
+                    mask_pil.save(mask_file)
 
-                # Add image info to external file
-                dataset_relative_dir = Path(outdir).relative_to(DATASET_BASEDIR)
-                relpath = dataset_relative_dir / Path(inpath_str).name
-                created_at = ai_inspection.get("date")
-                image_lineinfo = f"{str(relpath)},{created_at},{camera},{ai_label},{ground_truth_name}"
-                append_image_path_to_file(image_lineinfo, fd=fd)
+                    # copy image file
+                    copy_file(inpath_str, outdir)
+
+                    # Add annotations to folder
+                    annot_dir.mkdir(parents=True, exist_ok=True)
+                    annot_file = annot_dir / Path(inpath_str).name
+                    annot_file = annot_file.with_suffix(".txt")
+                    add_annotation(bboxes_list, annot_file, img_shape, ground_truth_index)
+
+                    # Add image info to external file
+                    dataset_relative_dir = Path(outdir).relative_to(DATASET_BASEDIR)
+                    relpath = dataset_relative_dir / Path(inpath_str).name
+                    created_at = ai_inspection.get("date")
+                    image_lineinfo = f"{str(relpath)},{created_at},{camera},{ai_label},{ground_truth_name}"
+                    append_image_path_to_csv(image_lineinfo, fd=fd)
+                else:
+                    failed_outdir = Path(str(outdir).replace("/images/", "/images_no_bboxes/"))
+                    failed_outdir.mkdir(parents=True, exist_ok=True)
+                    # Add segmentation mask to folder
+                    mask_file = failed_outdir / Path(inpath_str).name
+                    mask_file = mask_file.with_suffix(".mask.png")
+                    mask_pil.save(mask_file)
+
+                    copy_file(inpath_str, failed_outdir)
 
             # else:
             #     logger.warning(

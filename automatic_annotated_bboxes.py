@@ -114,7 +114,7 @@ def get_train_bboxes(mask_np, threshold=0.3):
     contours, _ = cv2.findContours(mask_np, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if len(contours) < 1:
-        return mask_np, [], []
+        return [], []
 
     areas = [cv2.contourArea(c) for c in contours]
     max_index = np.argmax(areas)
@@ -156,7 +156,7 @@ def build_bboxes(image_path, label="", dbg_outdir=None):
         pil_mask = decode_image(b64_mask)
         mask_np = np.array(pil_mask, dtype=np.uint8)
 
-        _, bboxes = get_train_bboxes(mask_np)
+        contour_list, bboxes = get_train_bboxes(mask_np)
 
         if dbg_outdir is not None:
             pil_image_dbg = pil_image.copy()
@@ -167,4 +167,5 @@ def build_bboxes(image_path, label="", dbg_outdir=None):
             pil_image_dbg.save(f"{dbg_path}.debug.jpg")
 
         return pil_image.size, bboxes, pil_mask
+
     raise AppError(r.status_code, "Failed to process image on segmentation service!")

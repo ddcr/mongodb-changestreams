@@ -1,0 +1,49 @@
+###
+### A complete description of a Prefect Deployment for flow 'yolo-workflow'
+###
+name: ml_workflow_yolo
+description: null
+version: e3e93c29f5434e3d5c649d8035f365fb
+# The work queue that will handle this deployment's runs
+work_queue_name: default
+work_pool_name: null
+tags:
+- yolo
+parameters: {}
+schedule: null
+schedules: []
+is_schedule_active: null
+infra_overrides: {}
+infrastructure:
+  type: process
+  env: {}
+  labels: {}
+  name: null
+  command: null
+  stream_output: true
+  working_dir: null
+  block_type_slug: process
+  _block_type_slug: process
+
+###
+### DO NOT EDIT BELOW THIS LINE
+###
+flow_name: yolo-workflow
+manifest_path: null
+storage: null
+path: /home/ddcr/ivsn-ddcr-dev/gerdau_scrap_dev/mongodb-changestreams/prefect-ml-example2
+entrypoint: train_yoloflow.py:yolo_workflow
+parameter_openapi_schema:
+  title: Parameters
+  type: object
+  properties:
+    dset_inputdir:
+      default: ../dataset_in_preparation
+      position: 0
+      title: dset_inputdir
+      type: string
+  required: null
+  definitions: null
+timestamp: '2024-10-29T17:59:22.390622+00:00'
+triggers: []
+enforce_parameter_schema: null
