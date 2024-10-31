@@ -127,6 +127,11 @@ class WebSocketClient:
             try:
                 message_json = json_util.loads(message)
                 parse_change_stream_event(message_json, fd=self.file)
+
+                # TODO: After writing to the CSV, read it into a DataFrame
+                # TODO: df = pd.read_csv(self.file_path)
+                # TODO: logger.info(f"Loaded DataFrame with {len(df)} records")
+
             except Exception as e:
                 logger.exception(
                     f"An error occurred while parsing the change stream event: {e}"

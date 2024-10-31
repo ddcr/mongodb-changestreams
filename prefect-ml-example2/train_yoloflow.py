@@ -209,7 +209,11 @@ def train_classification_model(
     Returns:
         _description_
     """
-    from clearml import Task
+    try:
+        import clearml
+        from clearml import Task
+    except ImportError:
+        clearml = None
 
     flow_run_id = prefect.runtime.flow_run.id
 
@@ -220,12 +224,13 @@ def train_classification_model(
     print(f"Local storage for this run: {str(yolo_rundir)}")
 
     # creating a ClearML Task
-    task = Task.init(
-        project_name = project,
-        task_name = task_name,
-        tags=[model_variant, "AutoML"]
-    )
-    task.set_parameter("model_variant", model_variant)
+    if clearml:
+        task = Task.init(
+            project_name = project,
+            task_name = task_name,
+            tags=[model_variant, "AutoML"]
+        )
+        task.set_parameter("model_variant", model_variant)
 
     # load a pretrained model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -243,7 +248,8 @@ def train_classification_model(
         label_smoothing=1
     )
 
-    task.connect(args)
+    if clearml:
+        task.connect(args)
 
     # Start training
     print("Training started!")
