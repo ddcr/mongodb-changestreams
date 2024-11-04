@@ -1,0 +1,3 @@
+[submodule "lir"]
+	path = lir
+	url = https://github.com/OpenStitching/lir.git
