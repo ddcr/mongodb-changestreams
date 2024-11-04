@@ -3,6 +3,7 @@ __email__ = "domingos.rodrigues@inventvision.com.br"
 __copyright__ = "Copyright (C) 2024 Invent Vision"
 __license__ = "Strictly proprietary for Invent Vision."
 
+import sys
 from pathlib import Path
 
 import cv2
@@ -15,11 +16,14 @@ from shapely import Polygon
 import lir.largestinteriorrectangle as lir
 from utils import (
     AppError,
+    add_annotation,
     configs,
+    copy_file,
     decode_image,
     draw_gt_boxes,
     encode_image,
     overlay_mask,
+    scrapRank,
 )
 
 
@@ -169,3 +173,127 @@ def build_bboxes(image_path, label="", dbg_outdir=None):
         return pil_image.size, bboxes, pil_mask
 
     raise AppError(r.status_code, "Failed to process image on segmentation service!")
+
+
+def append_image_path_to_csv(line, csv_fd=None):
+    if csv_fd:
+        try:
+            csv_fd.write(f"{line}\n")
+            csv_fd.flush()
+            logger.info(f"Append image info: {line}")
+        except Exception as e:
+            logger.exception(f"Failed to add image info: {e}")
+
+
+def add_image_to_dataset(
+    full_document, mongo_db, dataset_basedir="staging_dataset", csv_fd=None
+):
+    """_summary_
+
+    Arguments:
+        full_document -- _description_
+    """
+
+    try:
+        gscs_id = full_document.get("gscs_id")
+        manual_classcode = full_document.get("grade")
+
+        logger.info(f"Processing document with GSCS ID '{gscs_id}'")
+
+        # retriev AI inspection with gscs_id
+        ai_inspection = mongo_db.inspections.find_one({"gscs_id": gscs_id})
+        if ai_inspection:
+            inspection_id = ai_inspection.get("_id")
+            ai_label = ai_inspection.get("result", {}).get("detection", {}).get("class")
+
+            # Accumulate all images regardless of classification aggrement between AI
+            # and human classifications
+            logger.debug(f"[AI inspection] - {inspection_id} | Action: add to DataSet")
+
+            ground_truth_index, ground_truth_name = scrapRank[manual_classcode]
+
+            # extract image paths for the inspection points
+            for i in ai_inspection.get("inspections", []):
+                camera, inpath_str = i["inspectionPoint"], i["imagePath"]
+
+                outdir = Path(dataset_basedir) / "images" / ground_truth_name / camera
+                annot_dir = Path(str(outdir).replace("/images/", "/labels/"))
+                masks_dir = Path(str(outdir).replace("/images/", "/masks/"))
+                dbg_outdir = Path(str(outdir).replace("/images/", "/debug/"))
+
+                # The MongoDB instance is installed and running on a Windows-based machine
+                if sys.platform.startswith("linux"):
+                    inpath_str = inpath_str.replace("\\", "/")
+                    inpath_str = inpath_str.replace("D:", "/media/ddcr/sahagun")
+                    outdir = str(outdir).replace("\\", "/")
+
+                # add this image and its associated annotated bounding boxes
+                logger.info(f"{camera}: {inpath_str} -> {outdir}")
+
+                inpath = Path(inpath_str)
+                if not (inpath.exists() and inpath.is_file()):
+                    raise Exception(f"Missing image file: {inpath_str}")
+
+                logger.info("Segmenting image and fitting bounding boxes")
+
+                if not dbg_outdir.exists():
+                    dbg_outdir.mkdir(parents=True, exist_ok=True)
+
+                img_shape, bboxes_list, mask_pil = build_bboxes(
+                    inpath_str,
+                    label=ground_truth_name,
+                    dbg_outdir=dbg_outdir,
+                )
+
+                if len(bboxes_list) > 0:
+                    logger.debug(
+                        f"Segmentation and bounding box application successful: \n"
+                        f"Found {len(bboxes_list)} bounding boxes for image {inpath_str}"
+                    )
+                    # Add segmentation mask to folder
+                    masks_dir.mkdir(parents=True, exist_ok=True)
+                    mask_file = masks_dir / Path(inpath_str).name
+                    mask_file = mask_file.with_suffix(".png")
+                    mask_pil.save(mask_file)
+
+                    # copy image file
+                    copy_file(inpath_str, outdir)
+
+                    # Add annotations to folder
+                    annot_dir.mkdir(parents=True, exist_ok=True)
+                    annot_file = annot_dir / Path(inpath_str).name
+                    annot_file = annot_file.with_suffix(".txt")
+                    add_annotation(
+                        bboxes_list, annot_file, img_shape, ground_truth_index
+                    )
+
+                    # Log image info to CSV file
+                    dataset_relative_dir = Path(outdir).relative_to(dataset_basedir)
+                    relpath = dataset_relative_dir / Path(inpath_str).name
+                    created_at = ai_inspection.get("date")
+                    image_lineinfo = f"{str(relpath)},{created_at},{camera},{ai_label},{ground_truth_name}"
+                    append_image_path_to_csv(image_lineinfo, csv_fd=csv_fd)
+                else:
+                    logger.warning(f"No bounding boxes found for image {inpath_str}")
+                    failed_outdir = Path(
+                        str(outdir).replace("/images/", "/images_no_bboxes/")
+                    )
+                    failed_outdir.mkdir(parents=True, exist_ok=True)
+                    # Add segmentation mask to folder
+                    mask_file = failed_outdir / Path(inpath_str).name
+                    mask_file = mask_file.with_suffix(".mask.png")
+                    mask_pil.save(mask_file)
+
+                    copy_file(inpath_str, failed_outdir)
+
+            logger.info(
+                "Inspection successfully completed and incorporated into the dataset."
+            )
+        else:
+            logger.warning(f"No AI inspection found for GSCS ID: {gscs_id}")
+    except AppError as e:
+        httpReturnCode = e.code
+        responseErrorMessage = e.message
+        logger.exception(f"AppError [{httpReturnCode}]: {responseErrorMessage}")
+    except Exception as e:
+        logger.exception(f"Failure during mongo document processing: {e}")

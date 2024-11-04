@@ -120,7 +120,7 @@ def count_files_in_subfolders(folder_paths):
         folder = Path(folder_path)
 
         # Count files in the current subfolder
-        file_count = sum(1 for item in folder.glob('*') if item.is_file())
+        file_count = sum(1 for item in folder.glob("*") if item.is_file())
         file_counts[folder_path] = file_count  # Store the count in the dictionary
 
     return file_counts
@@ -216,7 +216,7 @@ def overlay_mask(image, seg_mask):
     return Image.fromarray(np.uint8(img))
 
 
-def connect_to_mongo(host: str, port: int, database='gerdau_scrap_classification'):
+def connect_to_mongo(host: str, port: int, database="gerdau_scrap_classification"):
     """
     Establishes a connection to the MongoDB instance.
     Returns the connected database client.

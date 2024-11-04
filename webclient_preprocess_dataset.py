@@ -14,28 +14,22 @@ from datetime import datetime
 from pathlib import Path
 
 import logzero
+import pandas as pd
 import tornado.ioloop
 import tornado.websocket
 from bson import json_util
 from logzero import logger
 
-from automatic_annotated_bboxes import build_bboxes
-from utils import (
-    AppError,
-    add_annotation,
-    connect_to_mongo,
-    copy_file,
-    count_files_in_subfolders,
-    scrapRank,
-)
+from automatic_annotated_bboxes import add_image_to_dataset
+from utils import connect_to_mongo
 
 mongo_db = None
 
 if sys.platform.startswith("linux"):
-    DATASET_BASEDIR = os.getenv("DATASET_DIR", r"dataset_in_preparation")
+    DATASET_BASEDIR = os.getenv("DATASET_DIR", r"staging_dataset")
 else:
     DATASET_BASEDIR = os.getenv(
-        "DATASET_DIR", r"D:\ivision\automatic_retraining\dataset_in_preparation"
+        "DATASET_DIR", r"D:\ivision\automatic_retraining\staging_dataset"
     )
 
 
@@ -44,6 +38,7 @@ class WebSocketClient:
         self,
         io_loop,
         url="ws://127.0.0.1:8000/socket",
+        dataset_dir="staging_dataset",
         max_retries=10,
         retry_interval=3,
         file_path="images.csv",
@@ -54,12 +49,15 @@ class WebSocketClient:
         self.max_retries = max_retries
         self.retry_interval = retry_interval
         self.retries = 0
-        self.file_path = Path(DATASET_BASEDIR) / file_path
+        self.dataset_dir = dataset_dir
+        self.file_path = Path(self.dataset_dir) / file_path
         self.file = None
 
     def start(self):
         # make sure DATASET_BASEDIR exists
-        Path(DATASET_BASEDIR).mkdir(parents=True, exist_ok=True)
+        if not Path(self.dataset_dir).exists():
+            Path(self.dataset_dir).mkdir(parents=True, exist_ok=True)
+
         self.open_file()
         self.connect_and_read()
 
@@ -114,7 +112,7 @@ class WebSocketClient:
                 self.stop()
 
     def on_message(self, message):
-        """Receives Change Stream from MongoDB
+        """Receives Change Stream message from MongoDB
 
         Arguments:
             message -- BSON document with keys ['_id', 'operationType',
@@ -126,11 +124,23 @@ class WebSocketClient:
         else:
             try:
                 message_json = json_util.loads(message)
-                parse_change_stream_event(message_json, fd=self.file)
+                self.parse_change_stream_event(message_json)
 
-                # TODO: After writing to the CSV, read it into a DataFrame
-                # TODO: df = pd.read_csv(self.file_path)
-                # TODO: logger.info(f"Loaded DataFrame with {len(df)} records")
+                # read images.csv into a dataframe e provide some
+                # statistics of the folder content
+                try:
+                    df = pd.read_csv(self.file_path)
+                    logger.info(
+                        f"Loaded dataframe of directory content with {len(df)} records"
+                    )
+                except pd.errors.EmptyDataError:
+                    logger.info("The CSV file is empty")
+                except pd.errors.ParserError as e:
+                    logger.exception(f"Error parsing the CSV file: {e}")
+                except Exception as e:
+                    logger.exception(
+                        f"An error occurred while reading the CSV file: {e}"
+                    )
 
             except Exception as e:
                 logger.exception(
@@ -143,7 +153,12 @@ class WebSocketClient:
                     if res:
                         self.signal_to_ml_workflow({"trigger": "train_ml"})
                     else:
-                        logger.warning("Dataset is not yet ready for training")
+                        logger.warning(
+                            "Threshold not met: [current_count] images in staging directory."
+                        )
+                        logger.warning(
+                            "Awaiting additional images to trigger ML training workflow."
+                        )
 
     def is_dataset_ready(self):
         """Count images per class"""
@@ -156,209 +171,85 @@ class WebSocketClient:
             except Exception as e:
                 logger.exception(f"Failed to trigger the ML workflow: {e}")
 
-
-def parse_change_stream_event(change_event, fd=None):
-    operation_type = change_event.get("operationType")
-    event_id = change_event.get("_id")
-    event_docuid = change_event.get("documentKey")
-    if event_id:
-        logger.debug(
-            f"Worker: received Change Stream event:\n"
-            f"{'ID:':<10} {event_id}\n"
-            f"{'OP:':<10} {operation_type}\n"
-            f"{'Doc Mongo ID:':<10} {event_docuid}"
-        )
-
-    # verify type of document
-    full_document = change_event.get("fullDocument")
-
-    # handle cases with fullDocument = None
-    if full_document is None:
-        if operation_type == "delete":
-            logger.debug(f"Document with ID {event_docuid} was deleted.")
-        else:
-            logger.warning(
-                f"This change stream event involves no 'fullDocument' [OP: {operation_type}]."
+    def parse_change_stream_event(self, change_event):
+        operation_type = change_event.get("operationType")
+        event_id = change_event.get("_id")
+        event_docuid = change_event.get("documentKey")
+        if event_id:
+            logger.debug(
+                f"Worker: received Change Stream event:\n"
+                f"{'ID:':<10} {event_id}\n"
+                f"{'OP:':<10} {operation_type}\n"
+                f"{'Doc Mongo ID:':<10} {event_docuid}"
             )
-        return
 
-    # proceed with handling based on the content of 'fullDocument'
-    document_origin = full_document.get("origin")
+        # verify type of document
+        full_document = change_event.get("fullDocument")
 
-    if document_origin is None:
-        if "need_sync" in full_document:
-            # GSCS entry inserted
-            gscs_id = full_document.get("gscs_id")
+        # handle cases with fullDocument = None
+        if full_document is None:
+            if operation_type == "delete":
+                logger.debug(f"Document with ID {event_docuid} was deleted.")
+            else:
+                logger.warning(
+                    f"Change stream event missing 'fullDocument' for operation type '{operation_type}'.\n"
+                    f"Event details: operationType={operation_type}, documentKey={event_docuid}"
+                )
+            return
 
+        # proceed with handling based on the content of 'fullDocument'
+        document_origin = full_document.get("origin")
+
+        if document_origin is None:
+            if "need_sync" in full_document:
+                # GSCS entry inserted
+                gscs_id = full_document.get("gscs_id")
+
+                if operation_type == "insert":
+                    logger.debug(
+                        f"[GSCS insertion] - {gscs_id} | Action: Add GSCS initial info"
+                    )
+                elif operation_type == "update":
+                    logger.debug(
+                        f"[GSCI update] - {gscs_id} | Action: Relay to function 'add_image_to_dataset'"
+                    )
+                    add_image_to_dataset(
+                        full_document,
+                        mongo_db,
+                        dataset_basedir=self.dataset_dir,
+                        csv_fd=self.file,
+                    )
+                else:
+                    logger.debug(
+                        f"[GSCS {operation_type}] - {gscs_id} | Action: 'operationType' not handled"
+                    )
+
+        elif document_origin == "/gerdau/scrap_detection/inspect":
+            # inspection classified by AI
+
+            inspection_id = full_document.get("_id")
             if operation_type == "insert":
                 logger.debug(
-                    f"[GSCS insertion] - {gscs_id} | Action: Add GSCS initial info"
+                    f"[AI inspection {operation_type}] - {inspection_id} | Action: Relay to another endpoint"
                 )
-            elif operation_type == "update":
+            elif operation_type in ["update", "replace"]:
                 logger.debug(
-                    f"[GSCI update] - {gscs_id} | Action: Relay to function 'add_image_to_dataset'"
+                    f"[AI inspection {operation_type}] - {inspection_id} | Action: 'operationType' not handled"
                 )
-                #########################
-                #  Add image to dataset
-                #########################
-                add_image_to_dataset(full_document, fd=fd)
+            elif operation_type == "delete":
+                logger.debug(
+                    f"[AI inspection {operation_type}] - {inspection_id} | Document deleted."
+                )
             else:
-                logger.debug(
-                    f"[GSCS {operation_type}] - {gscs_id} | Action: 'operationType' not handled"
+                logger.warning(
+                    f"[AI inspection {operation_type}] - {inspection_id} | Unexpected operation type"
                 )
 
-    elif document_origin == "/gerdau/scrap_detection/inspect":
-        # inspection classified by AI
-
-        inspection_id = full_document.get("_id")
-        if operation_type == "insert":
-            logger.debug(
-                f"[AI inspection {operation_type}] - {inspection_id} | Action: Relay to another endpoint"
-            )
-        elif operation_type in ["update", "replace"]:
-            logger.debug(
-                f"[AI inspection {operation_type}] - {inspection_id} | Action: 'operationType' not handled"
-            )
-        elif operation_type == "delete":
-            logger.debug(
-                f"[AI inspection {operation_type}] - {inspection_id} | Document deleted."
-            )
         else:
-            logger.warning(
-                f"[AI inspection {operation_type}] - {inspection_id} | Unexpected operation type"
+            logger.error(
+                "Change Stream Error: Unknown document type detected."
+                "Unable to process the associated document."
             )
-
-    else:
-        logger.error(
-            "Change Stream Error: Unknown document type detected."
-            "Unable to process the associated document."
-        )
-
-
-def append_image_path_to_csv(line, fd=None):
-    if fd:
-        try:
-            fd.write(f"{line}\n")
-            fd.flush()
-            logger.info(f"Append image info: {line}")
-        except Exception as e:
-            logger.exception(f"Failed to add image info: {e}")
-
-
-def add_image_to_dataset(full_document, fd=None):
-    """_summary_
-
-    Arguments:
-        full_document -- _description_
-    """
-
-    try:
-        gscs_id = full_document.get("gscs_id")
-        manual_classcode = full_document.get("grade")
-
-        logger.info(f"Processing document with GSCS ID '{gscs_id}'")
-
-        # retriev AI inspection with gscs_id
-        ai_inspection = mongo_db.inspections.find_one({"gscs_id": gscs_id})
-        if ai_inspection:
-            inspection_id = ai_inspection.get("_id")
-            ai_label = ai_inspection.get("result", {}).get("detection", {}).get("class")
-
-            # TODO: Accumulate all images regardless of classification aggrement
-            # TODO: between AI and human classifications
-            # ai_classcode = (
-            #     ai_inspection.get("result", {}).get("detection", {}).get("classCode")
-            # )
-            # if manual_classcode == ai_classcode:
-            logger.debug(f"[AI inspection] - {inspection_id} | Action: add to DataSet")
-
-            ground_truth_index, ground_truth_name = scrapRank[manual_classcode]
-
-            # extract image paths for the inspection points
-            for i in ai_inspection.get("inspections", []):
-                camera, inpath_str = i["inspectionPoint"], i["imagePath"]
-                outdir = Path(DATASET_BASEDIR) / "images" / ground_truth_name / camera
-                annot_dir = Path(str(outdir).replace("/images/", "/labels/"))
-                masks_dir = Path(str(outdir).replace("/images/", "/masks/"))
-
-                # The MongoDB instance is installed and running on a Windows-based machine
-                if sys.platform.startswith("linux"):
-                    inpath_str = inpath_str.replace("\\", "/")
-                    inpath_str = inpath_str.replace("D:", "/media/ddcr/sahagun")
-                    outdir = str(outdir).replace("\\", "/")
-
-                ###################################
-                #
-                #    Standard Folder structure
-                #
-                ###################################
-                # add this image and its associated annotated bounding boxes
-                logger.info(f"{camera}: {inpath_str} -> {outdir}")
-
-                inpath = Path(inpath_str)
-                if not (inpath.exists() and inpath.is_file()):
-                    raise Exception(f"Missing image file: {inpath_str}")
-
-                logger.info("Segment image and automatically fit bounding boxes")
-
-                dbg_outdir = Path(str(outdir).replace("/images/", "/debug/"))
-                dbg_outdir.mkdir(parents=True, exist_ok=True)
-
-                img_shape, bboxes_list, mask_pil = build_bboxes(
-                    inpath_str,
-                    label=ground_truth_name,
-                    dbg_outdir=dbg_outdir,
-                )
-
-
-                if len(bboxes_list) > 0:
-                    # Add segmentation mask to folder
-                    masks_dir.mkdir(parents=True, exist_ok=True)
-                    mask_file = masks_dir / Path(inpath_str).name
-                    mask_file = mask_file.with_suffix(".png")
-                    mask_pil.save(mask_file)
-
-                    # copy image file
-                    copy_file(inpath_str, outdir)
-
-                    # Add annotations to folder
-                    annot_dir.mkdir(parents=True, exist_ok=True)
-                    annot_file = annot_dir / Path(inpath_str).name
-                    annot_file = annot_file.with_suffix(".txt")
-                    add_annotation(bboxes_list, annot_file, img_shape, ground_truth_index)
-
-                    # Add image info to external file
-                    dataset_relative_dir = Path(outdir).relative_to(DATASET_BASEDIR)
-                    relpath = dataset_relative_dir / Path(inpath_str).name
-                    created_at = ai_inspection.get("date")
-                    image_lineinfo = f"{str(relpath)},{created_at},{camera},{ai_label},{ground_truth_name}"
-                    append_image_path_to_csv(image_lineinfo, fd=fd)
-                else:
-                    failed_outdir = Path(str(outdir).replace("/images/", "/images_no_bboxes/"))
-                    failed_outdir.mkdir(parents=True, exist_ok=True)
-                    # Add segmentation mask to folder
-                    mask_file = failed_outdir / Path(inpath_str).name
-                    mask_file = mask_file.with_suffix(".mask.png")
-                    mask_pil.save(mask_file)
-
-                    copy_file(inpath_str, failed_outdir)
-
-            # else:
-            #     logger.warning(
-            #         f"[AI inspection] - {inspection_id} | AI and human classifications differ"
-            #     )
-
-            logger.info(
-                "Inspection successfully completed and incorporated into the dataset."
-            )
-        else:
-            logger.warning(f"No AI inspection found for GSCS ID: {gscs_id}")
-    except AppError as e:
-        httpReturnCode = e.code
-        responseErrorMessage = e.message
-        logger.exception(f"AppError [{httpReturnCode}]: {responseErrorMessage}")
-    except Exception as e:
-        logger.exception(f"Failure during mongo document processing: {e}")
 
 
 def main():

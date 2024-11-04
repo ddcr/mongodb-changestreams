@@ -26,11 +26,11 @@ WORK_DIR = os.path.dirname(script_path)
 
 if sys.platform.startswith("linux"):
     DATASET_BASEDIR = os.getenv(
-        "DATASET_DIR", os.path.join(WORK_DIR, "dataset_in_preparation")
+        "DATASET_DIR", os.path.join(WORK_DIR, "staging_dataset")
     )
 else:
     DATASET_BASEDIR = os.getenv(
-        "DATASET_DIR", r"D:\ivision\automatic_retraining\dataset_in_preparation"
+        "DATASET_DIR", r"D:\ivision\automatic_retraining\staging_dataset"
     )
 
 

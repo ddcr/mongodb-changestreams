@@ -12,6 +12,8 @@ __license__ = "Strictly proprietary for Invent Vision."
 
 
 import argparse
+import asyncio
+import sys
 
 import logzero
 import tornado.httpserver
@@ -35,6 +37,7 @@ class ChangesHandler(tornado.websocket.WebSocketHandler):
     connected_clients = set()
 
     def check_origin(self, origin):
+        """Allows all origins (security risk)"""
         return True
 
     def open(self):
@@ -84,8 +87,8 @@ async def watch(collection):
     global change_stream
     resume_token = None
 
-    try:
-        while True:
+    while True:
+        try:
             """
             This loop is used to resume watching if some 'invalidate' operation is detected.
             An invalidate event is emitted when:
@@ -109,13 +112,14 @@ async def watch(collection):
                         break  # break loop and restart watch process
                     ChangesHandler.on_change(change)
 
-    except Exception as e:
-        logger.exception(f"Error watching change stream: {e}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.exception(f"Error in change stream watch: {e}")
+            await asyncio.sleep(5)
 
 
 def main():
-    logzero.logfile("logs/server.log", maxBytes=1000000, backupCount=5)
-
     parser = argparse.ArgumentParser(
         description="WebSocket Server that proxies any new data from the Mongo change stream to connected clients",
         add_help=True,
@@ -136,7 +140,20 @@ def main():
         help="MongoDB access port (e.g. 27017) [default: %(default)s]",
     )
 
+    parser.add_argument(
+        "--disable-stderr-logger",
+        action="store_true",
+        help="Disable the stderr logger for logzero.",
+    )
+
     args = parser.parse_args()
+
+    logzero.logfile(
+        "logs/server.log",
+        maxBytes=1000000,
+        backupCount=5,
+        disableStderrLogger=args.disable_stderr_logger,
+    )
 
     # client = MotorClient(args.host, args.port, username="ivision", password="ivSN")
     client = AsyncIOMotorClient(
@@ -165,20 +182,21 @@ def main():
     )
     loop.add_callback(watch, gscs_classifications_collection)
 
-    logger.info("Started listening ...")
+    logger.warning("Started listening ...")
 
     try:
         loop.start()
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Shuting down server ...")
+        logger.warning("Shuting down server ...")
         pass
     except Exception as e:
         logger.exception(e)
     finally:
         if change_stream is not None:
-            change_stream.close()
+            loop.run_in_executor(None, change_stream.close)
         loop.stop()
-        logger.info("Server stopped.")
+        logger.warning("Server stopped.")
+        sys.exit(0)
 
 
 if __name__ == "__main__":

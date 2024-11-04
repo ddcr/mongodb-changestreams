@@ -218,8 +218,14 @@ def train_classification_model(
     flow_run_id = prefect.runtime.flow_run.id
 
     # create run folders
+    base_path = crop_dsetdir.parent / project
+    timestamp = datetime.datetime.now()
     task_name = f"prefect_run_{flow_run_id[:8]}"
-    yolo_rundir = crop_dsetdir.parent / project
+
+    yolo_rundir = base_path / timestamp.strftime("%Y/%m%d")
+    if not yolo_rundir.exists():
+        yolo_rundir.mkdir(parents=True, exist_ok=True)
+
     print(f"Flow run ID: {flow_run_id}")
     print(f"Local storage for this run: {str(yolo_rundir)}")
 
