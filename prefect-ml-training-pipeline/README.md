@@ -2,7 +2,7 @@ Prefect Deployment
 ==================
 
 ```bash
-prefect deployment build train_yoloflow.py:ml_workflow -n 'ml_workflow_yolo' -a --tag yolo
+prefect deployment build train_yoloflow.py:yolo_workflow -n 'ml_workflow_yolo' -a --tag yolo
 ```
 
 Prefect Logging (optional)
