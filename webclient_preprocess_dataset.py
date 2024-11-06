@@ -9,6 +9,7 @@ __license__ = "Strictly proprietary for Invent Vision."
 
 import argparse
 import os
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ import pandas as pd
 import tornado.ioloop
 import tornado.websocket
 from bson import json_util
+from filelock import FileLock
 from logzero import logger
 
 from automatic_annotated_bboxes import add_image_to_dataset
@@ -52,9 +54,9 @@ class WebSocketClient:
         self.dataset_dir = dataset_dir
         self.file_path = Path(self.dataset_dir) / file_path
         self.file = None
+        self.csv_header = "path,camera,created_at,added_at,ai_class,human_class"
 
     def start(self):
-        # make sure DATASET_BASEDIR exists
         if not Path(self.dataset_dir).exists():
             Path(self.dataset_dir).mkdir(parents=True, exist_ok=True)
 
@@ -69,8 +71,7 @@ class WebSocketClient:
         try:
             self.file = open(self.file_path, "a")
             if self.file.tell() == 0:
-                header = "path,created_at,camera,ai_class,human_class"
-                self.file.write(f"{header}\n")
+                self.file.write(f"{self.csv_header}\n")
             self.file.flush()
             logger.info(f"File opened for appending data: {self.file_path}")
         except Exception as e:
@@ -152,6 +153,7 @@ class WebSocketClient:
                     res = self.is_dataset_ready()
                     if res:
                         self.signal_to_ml_workflow({"trigger": "train_ml"})
+                        # self.rotate_dataset_directory()
                     else:
                         logger.warning(
                             "Threshold not met: [current_count] images in staging directory."
@@ -167,6 +169,7 @@ class WebSocketClient:
     def signal_to_ml_workflow(self, message):
         if self.connection:
             try:
+                self.snapshot_csv_file()
                 self.connection.write_message(json_util.dumps(message))
             except Exception as e:
                 logger.exception(f"Failed to trigger the ML workflow: {e}")
@@ -250,6 +253,22 @@ class WebSocketClient:
                 "Change Stream Error: Unknown document type detected."
                 "Unable to process the associated document."
             )
+
+    def snapshot_csv_file(self):
+        """Take a snapshot of the images.csv."""
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        snapshot_file_path = self.file_path.with_stem(
+            f"{self.file_path.stem}_{timestamp}"
+        )
+        lock_file_path = self.file_path.with_suffix(".lock")
+        lock = FileLock(lock_file_path)
+
+        try:
+            with lock:
+                shutil.copy2(self.file_path, snapshot_file_path)
+                logger.info(f"Snapshot of 'images.csv' created: {snapshot_file_path}")
+        except Exception as e:
+            logger.exception(f"Failed to create a snapshot of 'images.csv': {e}")
 
 
 def main():

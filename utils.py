@@ -33,6 +33,44 @@ class AppError(Exception):
             self.message = "Internal Server Error"
 
 
+def singleton(cls):
+    instances = {}
+
+    def wrapper(*args, **kwargs):
+        if cls not in instances:
+            instances[cls] = cls(*args, **kwargs)
+        return instances[cls]
+
+    return wrapper
+
+
+@singleton
+class MongoConnection:
+    db = None
+    client = None
+
+    def __init__(self, host: str, port: int, database="gerdau_scrap_classification"):
+        try:
+            self.client = MongoClient(
+                host,
+                port,
+                username=os.getenv("MONGO_INITDB_ROOT_USERNAME", "ivision"),
+                password=os.getenv("MONGO_INITDB_ROOT_PASSWORD", "ivSN"),
+                maxPoolSize=20,
+                minPoolSize=5,
+            )
+            self.db = self.client[database]
+            logger.info(
+                f"Connected to MongoDB '{host}:{port}'; database = '{database}'"
+            )
+        except Exception as e:
+            logger.exception(f"Failed to connect to MongoDB: {e}")
+            raise
+
+    def get_db(self):
+        return self.db
+
+
 def decode_image(base64_img):
     """
     Decode a base64 string to PIL Image

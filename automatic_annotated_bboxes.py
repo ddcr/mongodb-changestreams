@@ -3,6 +3,7 @@ __email__ = "domingos.rodrigues@inventvision.com.br"
 __copyright__ = "Copyright (C) 2024 Invent Vision"
 __license__ = "Strictly proprietary for Invent Vision."
 
+import datetime
 import sys
 from pathlib import Path
 
@@ -160,7 +161,9 @@ def build_bboxes(image_path, label="", dbg_outdir=None):
         pil_mask = decode_image(b64_mask)
         mask_np = np.array(pil_mask, dtype=np.uint8)
 
-        contour_list, bboxes = get_train_bboxes(mask_np)
+        # heuristic
+        # contour_list, bboxes = get_train_bboxes(mask_np)
+        bboxes = polygon_to_boxes(mask_np, roi_sz = 200)
 
         if dbg_outdir is not None:
             pil_image_dbg = pil_image.copy()
@@ -173,6 +176,93 @@ def build_bboxes(image_path, label="", dbg_outdir=None):
         return pil_image.size, bboxes, pil_mask
 
     raise AppError(r.status_code, "Failed to process image on segmentation service!")
+
+
+def polygon_to_boxes(mask: np.ndarray, roi_sz: int = 100, threshold: float = 0.8):
+    """
+    Split polygon area into multiples squares
+
+    Args:
+        mask (np.ndarray): Binarized image mask
+        roi_sz (int, optional): Desired ROI size. Defaults to 100.
+        threshold (float, optional): Minimum threshold acceptable to be inside of the mask limits or intersect. Defaults to 0.8.
+
+    Returns:
+        list: bounding boxes of proposed polygons
+    """
+
+    # Definitions
+    m_h, m_w = mask.shape
+    instance = np.where(mask == 255)
+    if len(instance[0]) == 0:
+        return []
+
+    bboxes = []
+    y_start = instance[0].min()
+    h = instance[0].max() - y_start
+
+    d = h % roi_sz
+    v_div = h // roi_sz
+    if v_div == 0 and d >= (roi_sz * threshold):
+        v_div = 1
+    elif d >= (roi_sz * threshold):
+        v_div += 1
+
+    # Updates initial top point
+    y_diff = h - (v_div * roi_sz)
+    if y_diff <= 0 and y_diff < -1 * (roi_sz / 2.0):
+        return []
+    y_step = 0 if (y_diff == 0 or v_div == 0) else int(y_diff / v_div / 2.0)
+    if y_step < 0:
+        y_step = 0.0
+        y_start += y_diff / 2
+    if y_start < 0:
+        y_start = 0
+
+    # Iterates vertically (top-down)
+    for dd in range(v_div):
+        y1 = int(y_start + dd * roi_sz + y_step + dd * 2 * y_step)
+        y2 = int(y1 + roi_sz)
+        if y2 > m_h:
+            y2 = m_h
+
+        # Get horizontal space
+        y_center = int((y2 + y1) / 2)
+        x_pos = np.where(instance[0] == y_center)
+        x_vals = instance[1][x_pos]
+        w = x_vals.max() - x_vals.min()
+        x_start = x_vals.min()
+
+        # Obtain boxes along horizontal axis
+        d = w % roi_sz
+        h_div = w // roi_sz
+        if h_div == 0:
+            h_div = 1
+        elif d >= threshold * roi_sz:
+            h_div += 1
+
+        # Updates initial left point
+        x_diff = w - (h_div * roi_sz)
+        x_step = 0 if (x_diff == 0 or h_div == 0) else int(x_diff / h_div / 2.0)
+        if x_step < 0:
+            x_step = 0.0
+            x_start += int(x_diff / 2)
+
+        # Fill the boxes horizontally (left-right)
+        for xx in range(h_div):
+            x1 = int(x_start + xx * roi_sz + x_step + xx * 2 * x_step)
+            if x1 < 0:
+                x1 = 0
+            x2 = x1 + roi_sz
+            if x2 > m_w:
+                x2 = m_w
+
+            bboxes.append([x1, y1, x2, y2])
+
+    # Cast array type to uint32
+    bboxes = np.array(bboxes, dtype=np.uint32)
+
+    return bboxes
 
 
 def append_image_path_to_csv(line, csv_fd=None):
@@ -271,7 +361,10 @@ def add_image_to_dataset(
                     dataset_relative_dir = Path(outdir).relative_to(dataset_basedir)
                     relpath = dataset_relative_dir / Path(inpath_str).name
                     created_at = ai_inspection.get("date")
-                    image_lineinfo = f"{str(relpath)},{created_at},{camera},{ai_label},{ground_truth_name}"
+                    added_at = datetime.datetime.now()
+                    # image_lineinfo = f"{str(relpath)},{created_at},{camera},{ai_label},{ground_truth_name}"
+                    image_lineinfo = f"{str(relpath)},{camera}, {created_at},{added_at},{ai_label},{ground_truth_name}"
+
                     append_image_path_to_csv(image_lineinfo, csv_fd=csv_fd)
                 else:
                     logger.warning(f"No bounding boxes found for image {inpath_str}")

@@ -15,6 +15,7 @@ import random
 import time
 from datetime import datetime, timezone
 
+from dateutil.relativedelta import relativedelta
 from logzero import logger
 from pymongo import ASCENDING
 
@@ -96,7 +97,7 @@ def saveIntegrationRequest(parGscsId, mongo_db):
     mongo_db.gscs_classifications.insert_one(data)
 
 
-def inject_inspections(sample, mongo_db):
+def inject_inspections(sample, mongo_db, drop=False):
     """_summary_
     Assume that the collection gscs_classifications does not exist
 
@@ -109,15 +110,18 @@ def inject_inspections(sample, mongo_db):
 
     # Check if the collection exists
     for collection in ["inspections", "gscs_classifications"]:
-        if collection in mongo_db.list_collection_names():
-            print(f"Collection '{collection}' exists. Dropping it.")
-            mongo_db[collection].drop()  # Drop the existing collection
+        if drop:
+            if collection in mongo_db.list_collection_names():
+                print(f"Collection '{collection}' exists. Dropping it.")
+                mongo_db[collection].drop()  # Drop the existing collection
 
-        # Recreate the collection
-        mongo_db.create_collection(collection)
+        if collection not in mongo_db.list_collection_names():
+            mongo_db.create_collection(collection)
 
     # insert_many() should be more performant
-    parGscsId = 1000000
+    # max_id = mongo_db.inspections.find_one().sort("gscs_id", -1)
+    max_id = mongo_db.inspections.find_one(sort=[("gscs_id", -1)])
+    parGscsId = max_id["gscs_id"] + 1 if max_id else 1000000
     for class_name, insp_list in sample.items():
         for insp in insp_list:
             logger.info(f"inject inspection: {insp['_id']}")
@@ -184,13 +188,34 @@ def update_inspections(mongo_db, force=False):
         time.sleep(3)
 
 
+def get_date_range(collection):
+    pipeline = [
+        {
+            "$group": {
+                "_id": None,
+                "min_date": {
+                    "$min": "$date"
+                },  # Replace 'date' with your date field name
+                "max_date": {"$max": "$date"},
+            }
+        }
+    ]
+    result = list(collection.aggregate(pipeline))
+    if result:
+        return result[0]["min_date"], result[0]["max_date"]
+    else:
+        return None, None
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="""
 Connects to MongoDB source databases (from Sahagun or Tultitlán sites), retrieves
 a representative sample of inspections, and injects them into a target MongoDB
-database instance. In summary, this tool facilitates data migration and analysis by
-transferring a subset of inspection records between different MongoDB environments.
+database instance for data analysis.
+This script is designed to facilitate the creation and management of a test MongoDB
+database by sampling inspection data from production databases located at the Sahagun
+and Tultitlan sites.
 """,
         add_help=True,
     )
@@ -208,28 +233,7 @@ transferring a subset of inspection records between different MongoDB environmen
         type=str,
         required=False,
         default="127.0.0.1:27017",
-        help="MongoDB DESTINATION url [default: %(default)s]",
-    )
-
-    parser.add_argument(
-        "--inject",
-        action="store_true",
-        default=False,
-        help="Migrate data from MongoDB source databases to the 'test' database [default: %(default)s]?",
-    )
-
-    parser.add_argument(
-        "--update",
-        action="store_true",
-        default=False,
-        help="Simulate GSCS database integration by updating 'gscs_info' for each inspection record [default: %(default)s]?",
-    )
-
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        default=True,
-        help="Force refresh of GSCS info for inspections [default: %(default)s]?",
+        help="MongoDB test DESTINATION url [default: %(default)s]",
     )
 
     parser.add_argument(
@@ -237,7 +241,30 @@ transferring a subset of inspection records between different MongoDB environmen
         type=int,
         required=False,
         default=10,
-        help="Number of inspections per class"
+        help="Number of inspections per class to retrieve and migrate [defaul: %(default)s]",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True, help="commands")
+
+    # injecting data subcommend
+    inject_parser = subparsers.add_parser(
+        "inject",
+        help="Migrate data from MongoDB source databases to the destination test database",
+    )
+    inject_parser.add_argument(
+        "--drop",
+        action="store_true",
+        help="Drop destination collections before data migration",
+    )
+
+    # Update subcommand
+    update_parser = subparsers.add_parser(
+        "update", help="Update GSCS database with new GSCS info for each inspection"
+    )
+    update_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force refresh of GSCS info for inspections (even if attribute 'need_sync' of inspection is False)",
     )
 
     args = parser.parse_args()
@@ -245,16 +272,40 @@ transferring a subset of inspection records between different MongoDB environmen
     mongo_dest_host, mongo_dest_port = args.mongo_url_dest.split(":")
     db_destination = connect_to_mongo(mongo_dest_host, int(mongo_dest_port))
 
-    if args.inject:
-        logger.info(f"Start collecting sample from {args.mongo_url_source}")
+    if args.command in ["inject"]:
+        logger.info(f"Start collecting samples from {args.mongo_url_source}")
         mongo_src_host, mongo_src_port = args.mongo_url_source.split(":")
         mongo_db_source = connect_to_mongo(mongo_src_host, int(mongo_src_port))
-        samples_dict = getRandomInspectionsFromEachClass(mongo_db_source, count=args.count)
+        if args.drop:
+            # Drop and repopulate the collection with initial data
+            samples_dict = getRandomInspectionsFromEachClass(
+                mongo_db_source, count=args.count
+            )
+        else:
+            # add sample inspections to the existing collection, avoiding duplicate entries
+
+            start_date, end_date = get_date_range(db_destination.inspections)
+            if all([start_date, end_date]):
+                # change date interval to avoid conflicts (duplicated inspections)
+                end_date = start_date
+                start_date -= relativedelta(months=6)
+                print(f"New Date range for new sample: {start_date} to {end_date}")
+                samples_dict = getRandomInspectionsFromEachClass(
+                    mongo_db_source,
+                    count=args.count,
+                    beginDate=start_date,
+                    endDate=end_date,
+                )
+            else:
+                # default
+                samples_dict = getRandomInspectionsFromEachClass(
+                    mongo_db_source, count=args.count
+                )
 
         logger.info(f"Migrate sample to {args.mongo_url_dest}")
-        inject_inspections(samples_dict, db_destination)
+        inject_inspections(samples_dict, db_destination, drop=args.drop)
 
-    if args.update:
+    if args.command in ["update"]:
         logger.info("Simulate availability of GSCS human classifications")
         logger.info("Update the inspections with new GSCS info")
 

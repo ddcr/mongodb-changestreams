@@ -11,15 +11,13 @@ import argparse
 import os
 import sys
 import uuid
-from pprint import pprint
+from pathlib import Path
 
 import httpx
 import tornado.ioloop
 import tornado.websocket
 from bson import json_util
 from logzero import logger
-
-deployment_id = None
 
 script_path = os.path.abspath(__file__)
 WORK_DIR = os.path.dirname(script_path)
@@ -38,12 +36,16 @@ class WebSocketClient:
     def __init__(
         self,
         io_loop,
+        deployment_ids,
+        staging_dataset_dir=DATASET_BASEDIR,
         url="ws://127.0.0.1:8000/socket",
         max_retries=10,
         retry_interval=3,
     ):
         self.connection = None
         self.io_loop = io_loop
+        self.deployment_ids = deployment_ids
+        self.staging_dataset_dir = staging_dataset_dir
         self.url = url
         self.max_retries = max_retries
         self.retry_interval = retry_interval
@@ -97,38 +99,42 @@ class WebSocketClient:
             message_json = json_util.loads(message)
             if message_json.get("trigger") == "start_ml":
                 logger.info("Trigger the ML workflow ...")
-                trigger_prefect_flow()
+                trigger_prefect_flow(self.deployment_ids, self.staging_dataset_dir)
 
 
-def trigger_prefect_flow():
-    headers = {"Authorization": "Bearer PREFECT_API_KEY"}
+def trigger_prefect_flow(deployment_ids, dataset_dir):
+    headers = {"Authorization": "Bearer of PREFECT_API_KEY"}
     payload = {
-        "name": "testing-ivision-automl",  # not required
-        "parameters": {"dset_inputdir": DATASET_BASEDIR},
+        "name": "ivision-automl",  # not required
+        "parameters": {"dset_inputdir": dataset_dir},
     }
 
-    try:
-        with httpx.Client() as client:
-            response = client.post(
-                f"http://localhost:4200/api/deployments/{deployment_id}/create_flow_run",
-                json=payload,
-            )
-            response.raise_for_status()
+    for deployment_id in deployment_ids:
+        try:
+            with httpx.Client() as client:
+                response = client.post(
+                    f"http://localhost:4200/api/deployments/{deployment_id}/create_flow_run",
+                    json=payload,
+                )
+                response.raise_for_status()
 
-            flow_run_info = response.json()
-            logger.debug(f"Triggered the ML flow run: {flow_run_info}")
-    except httpx.HTTPStatusError as e:
-        logger.exception(
-            f"HTTP error occurred: {e.response.status_code} - {e.response.text}"
-        )
-    except Exception as e:
-        logger.exception(f"An error occurred: {e}")
+                flow_run_info = response.json()
+                logger.debug(
+                    f"Triggered the ML flow run for deployment {deployment_id}: {flow_run_info}"
+                )
+        except httpx.HTTPStatusError as e:
+            logger.exception(
+                f"HTTP error occurred for deployment {deployment_id}: {e.response.status_code} - {e.response.text}"
+            )
+        except Exception as e:
+            logger.exception(f"An error occurred for deployment {deployment_id}: {e}")
 
 
 def valid_uuid(uuid_string):
     try:
         # Attempt to create a UUID object to validate the format
-        return str(uuid.UUID(uuid_string))
+        uuid.UUID(uuid_string)
+        return uuid_string
     except ValueError:
         raise argparse.ArgumentTypeError(f"Invalid UUID: '{uuid_string}'")
 
@@ -141,15 +147,28 @@ def main():
     )
 
     parser.add_argument(
-        "--id", type=valid_uuid, required=True, help="ID of Prefect deployment workflow"
+        "--folder",
+        type=lambda d: Path(d).absolute() if d else None,
+        default=None,
+        help="Directory for staging images prior to processing and training.",
+    )
+
+    parser.add_argument(
+        "--id",
+        type=valid_uuid,
+        nargs="+",
+        required=True,
+        help="ID(s) of Prefect deployment workflow. Accepts a single UUID or a list separated by spaces",
     )
 
     args = parser.parse_args()
 
-    deployment_id = args.id
-
     io_loop = tornado.ioloop.IOLoop.current()
-    client = WebSocketClient(io_loop)
+    if args.folder is None:
+        client = WebSocketClient(io_loop, args.id)
+    else:
+        client = WebSocketClient(io_loop, args.id, staging_dataset_dir=args.folder)
+
     io_loop.add_callback(client.start)
 
     io_loop.start()
