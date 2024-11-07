@@ -3,11 +3,18 @@
 ###
 name: ml_workflow_yolo
 description: |-
-  _summary_
+  YOLOv11 Classification Training Pipeline
 
-  Keyword Arguments:
-      dset_inputdir -- _description_ (default: {""})
-version: 4c4d4cdbed08535f50182f06a18e32f3
+  Prepares the dataset, trains a YOLOv11 classification model, evaluates its performance,
+  and saves the trained model.
+
+  Arguments:
+      dset_inputdir (str): Directory with original images for training.
+      images_path (str): Path to CSV file containing image metadata for training.
+
+  Returns:
+      None
+version: 6e7140aa1ab5ac927a555c47350082e0
 # The work queue that will handle this deployment's runs
 work_queue_name: default
 work_pool_name: null
@@ -42,12 +49,17 @@ parameter_openapi_schema:
   type: object
   properties:
     dset_inputdir:
-      default: ''
+      description: Directory with original images for training.
       position: 0
       title: dset_inputdir
-      type: string
-  required: null
+    images_path:
+      description: Path to CSV file containing image metadata for training.
+      position: 1
+      title: images_path
+  required:
+  - dset_inputdir
+  - images_path
   definitions: null
-timestamp: '2024-11-04T22:36:39.371116+00:00'
+timestamp: '2024-11-06T17:55:45.052939+00:00'
 triggers: []
 enforce_parameter_schema: null

@@ -164,7 +164,24 @@ class WebSocketClient:
 
     def is_dataset_ready(self):
         """Count images per class"""
+        # TODO
         return False
+
+    def snapshot_csv_file(self):
+        """Take a snapshot of the images.csv."""
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        snapshot_file_path = self.file_path.with_stem(
+            f"{self.file_path.stem}_{timestamp}"
+        )
+        lock_file_path = self.file_path.with_suffix(".lock")
+        lock = FileLock(lock_file_path)
+
+        try:
+            with lock:
+                shutil.copy2(self.file_path, snapshot_file_path)
+                logger.info(f"Snapshot of 'images.csv' created: {snapshot_file_path}")
+        except Exception as e:
+            logger.exception(f"Failed to create a snapshot of 'images.csv': {e}")
 
     def signal_to_ml_workflow(self, message):
         if self.connection:
@@ -253,22 +270,6 @@ class WebSocketClient:
                 "Change Stream Error: Unknown document type detected."
                 "Unable to process the associated document."
             )
-
-    def snapshot_csv_file(self):
-        """Take a snapshot of the images.csv."""
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        snapshot_file_path = self.file_path.with_stem(
-            f"{self.file_path.stem}_{timestamp}"
-        )
-        lock_file_path = self.file_path.with_suffix(".lock")
-        lock = FileLock(lock_file_path)
-
-        try:
-            with lock:
-                shutil.copy2(self.file_path, snapshot_file_path)
-                logger.info(f"Snapshot of 'images.csv' created: {snapshot_file_path}")
-        except Exception as e:
-            logger.exception(f"Failed to create a snapshot of 'images.csv': {e}")
 
 
 def main():

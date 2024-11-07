@@ -12,6 +12,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 import tornado.ioloop
@@ -19,17 +20,17 @@ import tornado.websocket
 from bson import json_util
 from logzero import logger
 
-script_path = os.path.abspath(__file__)
-WORK_DIR = os.path.dirname(script_path)
+script_path = Path(__file__).resolve()
+WORK_DIR = script_path.parent
 
 if sys.platform.startswith("linux"):
-    DATASET_BASEDIR = os.getenv(
-        "DATASET_DIR", os.path.join(WORK_DIR, "staging_dataset")
-    )
+    DATASET_BASEDIR = Path(os.getenv("DATASET_DIR", WORK_DIR / "staging_dataset"))
 else:
-    DATASET_BASEDIR = os.getenv(
-        "DATASET_DIR", r"D:\ivision\automatic_retraining\staging_dataset"
+    DATASET_BASEDIR = Path(
+        os.getenv("DATASET_DIR", r"D:\ivision\automatic_retraining\staging_dataset")
     )
+
+PREFECT_API_URL = None
 
 
 class WebSocketClient:
@@ -71,7 +72,7 @@ class WebSocketClient:
         try:
             self.connection = future.result()
         except Exception as e:
-            logger.exception("Could not reconnect, retrying ...")
+            logger.exception("Could not reconnect: {e}\n retrying ...")
             self.io_loop.call_later(self.retry_interval, self.connect_and_read)
 
     def maybe_retry_connection(self, future):
@@ -98,24 +99,37 @@ class WebSocketClient:
         else:
             message_json = json_util.loads(message)
             if message_json.get("trigger") == "start_ml":
+                images_file_path = message_json.get("images_file_path")
                 logger.info("Trigger the ML workflow ...")
-                trigger_prefect_flow(self.deployment_ids, self.staging_dataset_dir)
+                if images_file_path:
+                    trigger_prefect_flow(
+                        self.deployment_ids,
+                        self.staging_dataset_dir,
+                        images_file=images_file_path,
+                    )
+                else:
+                    trigger_prefect_flow(self.deployment_ids, self.staging_dataset_dir)
 
 
-def trigger_prefect_flow(deployment_ids, dataset_dir):
+def trigger_prefect_flow(
+    deployment_ids, dataset_dir: Path, images_file: str = "images.csv"
+):
+    images_file_abspath = dataset_dir / Path(images_file)
+
     headers = {"Authorization": "Bearer of PREFECT_API_KEY"}
     payload = {
         "name": "ivision-automl",  # not required
-        "parameters": {"dset_inputdir": dataset_dir},
+        "parameters": {
+            "dset_inputdir": str(dataset_dir),
+            "images_path": str(images_file_abspath),
+        },
     }
 
     for deployment_id in deployment_ids:
+        endpoint = f"{PREFECT_API_URL}/deployments/{deployment_id}/create_flow_run"
         try:
             with httpx.Client() as client:
-                response = client.post(
-                    f"http://localhost:4200/api/deployments/{deployment_id}/create_flow_run",
-                    json=payload,
-                )
+                response = client.post(endpoint, json=payload)
                 response.raise_for_status()
 
                 flow_run_info = response.json()
@@ -140,10 +154,17 @@ def valid_uuid(uuid_string):
 
 
 def main():
-    global deployment_id
+    global PREFECT_API_URL
 
     parser = argparse.ArgumentParser(
         description="WebClient that triggers a Prefect flow via API call", add_help=True
+    )
+
+    parser.add_argument(
+        "--api-url",
+        type=str,
+        default="http://127.0.0.1:4200/api",
+        help="URL for the Prefect API endpoint.",
     )
 
     parser.add_argument(
@@ -162,6 +183,8 @@ def main():
     )
 
     args = parser.parse_args()
+
+    PREFECT_API_URL = args.api_url
 
     io_loop = tornado.ioloop.IOLoop.current()
     if args.folder is None:

@@ -1,17 +1,18 @@
 import datetime
 import os
+import shutil
 from pathlib import Path
 from typing import List
 
 import pandas as pd
+import prefect
 import torch
 from PIL import Image
-import prefect
 from prefect import flow, task
+
 # from prefect.client import Client
 from prefect.logging import get_run_logger
 from sklearn.model_selection import train_test_split
-
 from ultralytics import YOLO
 
 script_path = os.path.abspath(__file__)
@@ -61,85 +62,112 @@ def xywhn_to_bbox(yolo_bb, im_w, im_h):
     return [int(x) for x in bbox_pix]
 
 
-def move_images(image_list: List[str], crop_destdir: Path, split_name: str):
-    for crop_src_relpath in image_list:
-        crop_dst_relpath_str = crop_src_relpath.replace("images", split_name)
-        crop_src_abspath = crop_destdir / crop_src_relpath
+def move_images(image_list: List[str], yolo_datadir: Path, split_name: str):
+    for image_src_relpath in image_list:
+        image_src_abspath = yolo_datadir / image_src_relpath
 
-        # flatten the folder tree structure under each class folder
-        crop_dst_relpath_parts = Path(crop_dst_relpath_str).parts
-        crop_dst_relpath_name = Path(crop_dst_relpath_str).name
-        crop_dst_relpath = Path(
-            crop_dst_relpath_parts[0], crop_dst_relpath_parts[1], crop_dst_relpath_name
-        )
-        # print(f"{crop_src_relpath} => {crop_dst_relpath}")
-        crop_dst_abspath = crop_destdir / crop_dst_relpath
+        image_dst_relpath = image_src_relpath.replace("images", split_name)
+        image_dst_abspath = yolo_datadir / image_dst_relpath
 
         # Ensure the destination directory exists
-        crop_dst_abspath.parent.mkdir(parents=True, exist_ok=True)
-        os.rename(crop_src_abspath, crop_dst_abspath)
+        image_dst_abspath.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.rename(image_src_abspath, image_dst_abspath)
+        except IsADirectoryError as e:
+            print(f"{image_dst_abspath} is a directory: {e}")
+        except NotADirectoryError as e:
+            print(f"{image_src_abspath} is a directory: {e}")
+        except PermissionError as e:
+            print("Operation not permitted")
+        except OSError as e:
+            print(e)
 
 
-@task(name="create_yolo_dataset", log_prints=True)
-def convert_dataset_to_yolo(dataset_inputdir: str, only_matched_classes=True):
+@task(name="setup_folder_hierarchy", log_prints=True)
+def setup_folder_hierarchy(dataset_inputdir):
+    timestamp = datetime.datetime.now()
+
+    # TODO: refactor this bit ... using config.json?
+    yolo_data_basedir = (
+        Path(dataset_inputdir).parent
+        / "automl_data"
+        / "prepared_datasets"
+        / "yolo"
+        / timestamp.strftime("%Y/%m%d")
+    )
+    yolo_data_basedir.mkdir(parents=True, exist_ok=True)
+
+    yolo_run_basedir = (
+        Path(dataset_inputdir).parent
+        / "automl_runs"
+        / "yolo"
+        / timestamp.strftime("%Y/%m%d")
+    )
+    yolo_run_basedir.mkdir(parents=True, exist_ok=True)
+
+    yolo_model_basedir = Path(dataset_inputdir).parent / "automl_models" / "yolo"
+    yolo_model_basedir.mkdir(parents=True, exist_ok=True)
+
+    return yolo_data_basedir, yolo_run_basedir, yolo_model_basedir
+
+
+@task(name="convert_raw_dataset_to_yolo_format", log_prints=True)
+def convert_raw_dataset_to_yolo_format(
+    source_basedir: str, images_path: str, yolo_basedir: Path, only_matched_classes=True
+):
     """Generates a YOLO-formatted dataset from a time-accumulated
         working dataset of images.
 
     Arguments:
-        dataset_inputdir -- origin working directory of images and labels
+        source_basedir -- source folder of raw images and annotations
+        images_path -- list of images selected for the training session
+        yolo_basedir -- base directory holding the final YOLO tree structure
 
     Keyword Arguments:
-        only_matched_classes -- Builds a dataset of images with matching AI and human labels. (default: {True})
+        only_matched_classes -- Builds a YOLO dataset of images with matching
+                                AI and human labels. (default: {True})
 
     Returns:
         Path to the YOLO dataset directory and a list of bounding box coordinates.
     """
-
     logger = get_run_logger()
-    logger.info(f"Reading data the dataset folder: '{dataset_inputdir}'")
 
-    csvfile = Path(dataset_inputdir) / "images.csv"
-    df = pd.read_csv(str(csvfile))
+    df = pd.read_csv(images_path)
 
-    # only consider files with absolute aggreement
     if only_matched_classes:
         rows_to_drop = df[df["ai_class"] != df["human_class"]].index
         df.drop(index=rows_to_drop, inplace=True)
 
     file_counts_per_class = df.groupby("ai_class").size().reset_index(name="file_count")
     file_total = file_counts_per_class["file_count"].sum()
+
     logger.info(file_counts_per_class)
-    logger.info(f"Total number of truck images = {file_total}")
+    logger.info(f"Total number of images = {file_total}")
 
-    logger.info("Create DATASET for YOLO CLASSIFICATION [cropping bounding boxes]")
-    yolo_dataset_dir = Path(dataset_inputdir).parent / "gerdau_yolo_dataset"
-    # yolo_dataset_dir = Path(WORKING_DIR) / "gerdau_yolo_dataset"
-    yolo_dataset_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"YOLO dataset location: {yolo_dataset_dir}")
+    logger.info(
+        "Initiating export: Converting staging directory contents to YOLO format..."
+    )
 
-    # yolo_dataset_cropdir = yolo_dataset_dir / "images"
-    # yolo_dataset_cropdir.mkdir(parents=True, exist_ok=True)
+    yolo_imagedir = yolo_basedir / "images"
+    yolo_imagedir.mkdir(parents=True, exist_ok=True)
 
-    # get column of labels
+    # get bbox crop images
     crop_paths = []
     for row in df.itertuples():
         img_src_relpath = str(row.path)
-        img_src_abspath = Path(dataset_inputdir) / img_src_relpath
+        class_label = str(row.human_class)
+        img_src_abspath = Path(source_basedir) / img_src_relpath
         image = Image.open(str(img_src_abspath)).convert("RGB")
         im_w, im_h = image.size
-
-        # crop if ROI is found
         label_src_relpath = img_src_relpath.replace("images", "labels")
         label_src_relpath = Path(label_src_relpath).with_suffix(".txt")
-        label_src_abspath = Path(dataset_inputdir) / label_src_relpath
+        label_src_abspath = Path(source_basedir) / label_src_relpath
 
-        # logger.info(img_src_abspath)
-        # logger.info(label_src_abspath)
-
-        img_dst_abspath = Path(yolo_dataset_dir) / img_src_relpath
         bboxes = get_bbox_image_slices(str(label_src_abspath))
 
-        # Skip images with no labels
+        # flatten
+        img_dst_abspath = yolo_imagedir / class_label / Path(img_src_relpath).name
+
         if bboxes is not None:
             for ib, yolo_bbox in enumerate(bboxes):
                 x, y, w, h = xywhn_to_bbox(yolo_bbox, im_w, im_h)
@@ -151,17 +179,15 @@ def convert_dataset_to_yolo(dataset_inputdir: str, only_matched_classes=True):
                 img_crop_dst_abspath.parent.mkdir(parents=True, exist_ok=True)
                 image_crop.save(str(img_crop_dst_abspath))
 
-                img_crop_dst_relpath = img_crop_dst_abspath.relative_to(
-                    yolo_dataset_dir
-                )
+                img_crop_dst_relpath = img_crop_dst_abspath.relative_to(yolo_basedir)
                 crop_paths.append(str(img_crop_dst_relpath))
 
-    return yolo_dataset_dir, crop_paths
+    return crop_paths
 
 
 @task(log_prints=True)
 def data_split(
-    yolo_dsetdir: Path,
+    yolo_datadir: Path,
     crop_images_list: List,
     train_split_sz: float = 0.3,
     seed: int = 42,
@@ -176,16 +202,18 @@ def data_split(
     print(f"val_list: {len(val_list)}")
     print(f"test_list: {len(test_list)}")
 
-    move_images(train_list, yolo_dsetdir, "train")
-    move_images(val_list, yolo_dsetdir, "val")
-    move_images(test_list, yolo_dsetdir, "test")
+    move_images(train_list, yolo_datadir, "train")
+    move_images(val_list, yolo_datadir, "val")
+    move_images(test_list, yolo_datadir, "test")
 
     # create dataset.yaml to order the scrap classes during training
 
 
 @task(log_prints=True)
 def train_classification_model(
-    crop_dsetdir,
+    yolo_datadir,
+    yolo_rundir,
+    task_name,
     imgsz=224,
     epochs=5,
     project="automl-yolo-runs",
@@ -215,35 +243,19 @@ def train_classification_model(
     except ImportError:
         clearml = None
 
-    flow_run_id = prefect.runtime.flow_run.id
-
-    # create run folders
-    base_path = crop_dsetdir.parent / project
-    timestamp = datetime.datetime.now()
-    task_name = f"prefect_run_{flow_run_id[:8]}"
-
-    yolo_rundir = base_path / timestamp.strftime("%Y/%m%d")
-    if not yolo_rundir.exists():
-        yolo_rundir.mkdir(parents=True, exist_ok=True)
-
-    print(f"Flow run ID: {flow_run_id}")
-    print(f"Local storage for this run: {str(yolo_rundir)}")
-
     # creating a ClearML Task
     if clearml:
         task = Task.init(
-            project_name = project,
-            task_name = task_name,
-            tags=[model_variant, "AutoML"]
+            project_name=project, task_name=task_name, tags=[model_variant, "AutoML"]
         )
         task.set_parameter("model_variant", model_variant)
 
     # load a pretrained model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = YOLO(f"{model_variant}.pt").to(device)
+    model_obj = YOLO(f"{model_variant}.pt").to(device)
 
     args = dict(
-        data=crop_dsetdir,
+        data=yolo_datadir,
         imgsz=imgsz,
         epochs=epochs,
         project=str(yolo_rundir),
@@ -251,7 +263,7 @@ def train_classification_model(
         amp=amp,
         val=val,
         close_mosaic=0,
-        label_smoothing=1
+        label_smoothing=1,
     )
 
     if clearml:
@@ -259,9 +271,9 @@ def train_classification_model(
 
     # Start training
     print("Training started!")
-    model_results = model.train(**args)
+    model_results = model_obj.train(**args)
 
-    return model_results, model
+    return model_results, model_obj
 
 
 @task
@@ -275,22 +287,17 @@ def evaluate_model(y_test, prediction: pd.DataFrame):
 
 
 @task(log_prints=True)
-def save_model(model_results, model):
+def save_model(model_obj, model_fpath):
     """_summary_
 
     Arguments:
-        model_results -- _description_
-        model -- _description_
+        model_obj -- _description_
+        model_basedir -- _description_
     """
-    print(f"model_results: {model_results}")
-
-    save_dir = getattr(model_results, "save_dir", None)
-    print(f"save_dir from model_results: {save_dir}")
-
-    print(f"model_info: {model.info()}")
+    print(f"model_info: {model_obj.info()}")
     # Save final model
-    model.save("auto_ml.pt")
-    print("Model saved as 'auto_ml.pt'")
+    model_obj.save(model_fpath)
+    print(f"Model saved: '{model_fpath}'")
 
 
 @flow(
@@ -298,29 +305,54 @@ def save_model(model_results, model):
     log_prints=True,
     flow_run_name=generate_flow_run_name,
 )
-def yolo_workflow(dset_inputdir: str = ""):
-    """_summary_
-
-    Keyword Arguments:
-        dset_inputdir -- _description_ (default: {""})
+def yolo_workflow(dset_inputdir, images_path):
     """
-    #######################################################################
+    YOLOv11 Classification Training Pipeline
+
+    Prepares the dataset, trains a YOLOv11 classification model, evaluates its performance,
+    and saves the trained model.
+
+    Arguments:
+        dset_inputdir (str): Directory with original images for training.
+        images_path (str): Path to CSV file containing image metadata for training.
+
+    Returns:
+        None
+    """
     logger = get_run_logger()
-    logger.info("Started YOLO classification training pipeline")
-    #######################################################################
 
-    yolo_dsetdir, crop_images_list = convert_dataset_to_yolo(dset_inputdir)
+    task_id = prefect.runtime.flow_run.id[:8]
+    logger.info(f"Started YOLO classification training pipeline ID: {task_id}")
 
-    data_split(yolo_dsetdir, crop_images_list)
+    # === 1 ===
+    yolo_datadir, yolo_rundir, yolo_modeldir = setup_folder_hierarchy(dset_inputdir)
+    yolo_datadir /= Path(f"dataset_{task_id}")
+    yolo_datadir.mkdir(parents=True, exist_ok=True)
 
-    # this model fits on 'knuth' GPU
-    res, model = train_classification_model(yolo_dsetdir, model_variant="yolo11n-cls")
+    # copy source file list of images
+    shutil.copy(images_path, yolo_datadir / Path(images_path).name)
+
+    # === 2 ===
+    crop_images_list = convert_raw_dataset_to_yolo_format(
+        dset_inputdir, images_path, yolo_datadir
+    )
+
+    # === 3 ===
+    data_split(yolo_datadir, crop_images_list)
+
+    task_name = f"run_{task_id}"
+    task_res, model_obj = train_classification_model(
+        yolo_datadir, yolo_rundir, task_name, model_variant="yolo11n-cls"
+    )
+    print(f"task_res: {task_res}")
 
     # predictions = get_prediction(X_test, model)
 
     # evaluate_model(y_test, predictions)
 
-    save_model(res, model)
+    timestamp_save_model = datetime.datetime.now()
+    model_fpath = yolo_modeldir / f"model_{task_id}.pt"
+    save_model(model_obj, model_fpath)
 
 
 if __name__ == "__main__":
