@@ -85,21 +85,38 @@ def getRandomInspectionsFromEachClass(
     return new_sample
 
 
-def saveIntegrationRequest(parGscsId, mongo_db):
-    data = {
-        "gscs_id": parGscsId,
-        "need_sync": True,
-        "retry_sync_count": 0,
-        "inspector": None,
-        "grade": None,
-        "cls_manual": None,
-    }
-    mongo_db.gscs_classifications.insert_one(data)
+def updateGSCSClassification(mongo_db, gscs_info, inspection_id):
+    if gscs_info:
+        update_data = {
+            "$set": {
+                "gscs_classification.inspector": str(gscs_info['inspector']),
+                "gscs_classification.classCode": str(gscs_info['classCode']),
+                "gscs_classification.class": gscs_info['class'],
+                "gscs_classification.need_sync": False
+            },
+            "$inc": {
+                "gscs_classification.retry_sync_count": 1
+            }
+        }
+    else:
+        update_data = {
+            "$set": {
+                "gscs_classification.inspector": None,
+                "gscs_classification.classCode": None,
+                "gscs_classification.class": None,
+                "gscs_classification.need_sync": True
+            },
+            "$inc": {
+                "gscs_classification.retry_sync_count": 1
+            }
+        }
+
+    # logger.debug(f"{inspection_id}: {update_data}")
+    mongo_db.inspections.update_one({"_id": inspection_id}, update_data,upsert=True)
 
 
 def inject_inspections(sample, mongo_db, drop=False):
     """_summary_
-    Assume that the collection gscs_classifications does not exist
 
     Arguments:
         sample -- _description_
@@ -109,17 +126,14 @@ def inject_inspections(sample, mongo_db, drop=False):
         raise Exception("Database not connected!")
 
     # Check if the collection exists
-    for collection in ["inspections", "gscs_classifications"]:
-        if drop:
-            if collection in mongo_db.list_collection_names():
-                print(f"Collection '{collection}' exists. Dropping it.")
-                mongo_db[collection].drop()  # Drop the existing collection
+    if drop and 'inspections' in mongo_db.list_collection_names():
+            print("Collection 'inspections' exists. Dropping it.")
+            mongo_db['inspections'].drop()  # Drop the existing collection
 
-        if collection not in mongo_db.list_collection_names():
-            mongo_db.create_collection(collection)
+    if 'inspections' not in mongo_db.list_collection_names():
+        mongo_db.create_collection('inspections')
 
     # insert_many() should be more performant
-    # max_id = mongo_db.inspections.find_one().sort("gscs_id", -1)
     max_id = mongo_db.inspections.find_one(sort=[("gscs_id", -1)])
     parGscsId = max_id["gscs_id"] + 1 if max_id else 1000000
     for class_name, insp_list in sample.items():
@@ -128,7 +142,8 @@ def inject_inspections(sample, mongo_db, drop=False):
             insp["gscs_id"] = parGscsId
             res = mongo_db.inspections.insert_one(insp)
             if res.acknowledged:
-                saveIntegrationRequest(parGscsId, mongo_db)
+                gscs_info = None
+                updateGSCSClassification(mongo_db, gscs_info, insp['_id'])
             else:
                 logger.error(f"Inspection {insp['_id']} could not be inserted")
             parGscsId += 1
@@ -136,24 +151,24 @@ def inject_inspections(sample, mongo_db, drop=False):
 
 def getPendingClassifications(mongo_db, force=False):
     if force:
-        pending = list(mongo_db.gscs_classifications.find())
+        query = {
+            "gscs_id": {"$exists": True, "$ne": None}
+        }
     else:
-        query = {"need_sync": True}
-        pending = list(mongo_db.gscs_classifications.find(query))
+        query = {
+            "$and": [
+                {
+                    "$or": [
+                        {"gscs_classification.need_sync": True},
+                        {"gscs_classification": {"$exists": False}}
+                    ]
+                },
+                {"gscs_id": {"$exists": True, "$ne": None}}
+            ]
+        }
+
+    pending = list(mongo_db.inspections.find(query))
     return pending
-
-
-def updateGSCSClassification(gscs_id, gscs_info, mongo_db):
-    update_data = {
-        "$set": {
-            "grade": gscs_info["grade"],
-            "cls_manual": gscs_info["cls_manual"],
-            "inspector": gscs_info["inspector"],
-            "need_sync": False,
-        },
-        "$inc": {"retry_sync_count": 1},
-    }
-    mongo_db.gscs_classifications.update_one({"gscs_id": gscs_id}, update_data)
 
 
 def update_inspections(mongo_db, force=False):
@@ -163,29 +178,31 @@ def update_inspections(mongo_db, force=False):
     pending_cls = getPendingClassifications(mongo_db, force=force)
 
     for cls in pending_cls:
-        gscs_id = cls["gscs_id"]
-        # retrieve associated inspection
-        query = {"gscs_id": gscs_id}
-        insp = mongo_db.inspections.find_one(query)
+        gscs_id = cls['gscs_id']
+        inspection_id = cls['_id']
 
-        if insp is None:
-            logger.error(f"Inspection with gscs_id '{gscs_id}' not found")
-        else:
-            # retrieve AI class code
-            insp_class_code = insp["result"]["detection"]["classCode"]
+        # retrieve AI class code
+        try:
+            insp_class_code = cls['result']['detection']['classCode']
+        except KeyError as e:
+            logger.exception(f"{e}")
+            insp_class_code = "00000000"
+        finally:
+            # for testing purposes, assume for now that AI and
+            # human classifications are equal
             insp_class_name = scrapRank[insp_class_code][1]
-            logger.info(f"insp {insp['_id']} => {insp_class_code} [{insp_class_name}]")
-
-            # Assume that Human and AI classifications are the same
             gscs_info = {
-                "grade": insp_class_code,
-                "cls_manual": insp_class_name,
+                "class": insp_class_name,
+                "classCode": insp_class_code,
                 "inspector": r"IVISION\EMPLOYEE",
             }
-            # logger.info(f"gscs_info[{gscs_id}] = {gscs_info}")
 
-            updateGSCSClassification(gscs_id, gscs_info, mongo_db)
-        time.sleep(3)
+        updateGSCSClassification(mongo_db, gscs_info, inspection_id)
+        logger.info(f"Updated document(s) for gscs_id: {gscs_id}")
+
+        # a simple API rate-limiting approach to prevent excessive use
+        # of external resources.
+        time.sleep(2)
 
 
 def get_date_range(collection):
@@ -195,7 +212,7 @@ def get_date_range(collection):
                 "_id": None,
                 "min_date": {
                     "$min": "$date"
-                },  # Replace 'date' with your date field name
+                },
                 "max_date": {"$max": "$date"},
             }
         }
@@ -285,17 +302,20 @@ and Tultitlan sites.
             # add sample inspections to the existing collection, avoiding duplicate entries
 
             start_date, end_date = get_date_range(db_destination.inspections)
-            if all([start_date, end_date]):
-                # change date interval to avoid conflicts (duplicated inspections)
-                end_date = start_date
-                start_date -= relativedelta(months=6)
-                print(f"New Date range for new sample: {start_date} to {end_date}")
-                samples_dict = getRandomInspectionsFromEachClass(
-                    mongo_db_source,
-                    count=args.count,
-                    beginDate=start_date,
-                    endDate=end_date,
-                )
+            if start_date is not None and end_date is not None:
+                try:
+                    # change date interval to avoid conflicts (duplicated inspections)
+                    new_end_date = start_date
+                    new_start_date = start_date - relativedelta(months=6)
+                    print(f"New Date range for fresh new samples: {start_date} to {end_date}")
+                    samples_dict = getRandomInspectionsFromEachClass(
+                        mongo_db_source,
+                        count=args.count,
+                        beginDate=new_start_date,
+                        endDate=new_end_date,
+                    )
+                except ValueError as e:
+                    logger.exception(e)
             else:
                 # default
                 samples_dict = getRandomInspectionsFromEachClass(
@@ -309,4 +329,7 @@ and Tultitlan sites.
         logger.info("Simulate availability of GSCS human classifications")
         logger.info("Update the inspections with new GSCS info")
 
-        update_inspections(db_destination, force=True)
+        if args.force:
+            update_inspections(db_destination, force=True)
+        else:
+            update_inspections(db_destination)

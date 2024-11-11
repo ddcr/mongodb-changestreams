@@ -3,6 +3,7 @@ __email__ = "domingos.rodrigues@inventvision.com.br"
 __copyright__ = "Copyright (C) 2024 Invent Vision"
 __license__ = "Strictly proprietary for Invent Vision."
 
+import csv
 import datetime
 import sys
 from pathlib import Path
@@ -102,7 +103,7 @@ def get_inscribed_rect_recursive(region, min_area: int):
     return inscribed_rectangles
 
 
-def get_train_bboxes(mask_np, threshold=0.3):
+def polygon_to_inscribed_boxes(mask_np, threshold=0.3):
     """_summary_
 
     Arguments:
@@ -128,12 +129,19 @@ def get_train_bboxes(mask_np, threshold=0.3):
     # approximate contour by the convex polygon
     hull = cv2.convexHull(cnt)
 
+    # minimum area for fitting an inscribed rectangle
     min_area = threshold * Polygon(np.squeeze(hull)).area
     bboxes = get_inscribed_rect_recursive(hull, min_area)
     return contours, bboxes
 
 
-def build_bboxes(image_path, label="", dbg_outdir=None):
+def build_bboxes(
+    image_path,
+    human_label=None,
+    ai_label=None,
+    dbg_outdir=None,
+    box_cover_heuristic="grid",
+):
     """_summary_
 
     Arguments:
@@ -148,7 +156,7 @@ def build_bboxes(image_path, label="", dbg_outdir=None):
     endpoint_url = f"{host}:{port}{endpoint}"
     authToken = configs["authToken"]
 
-    logger.info(f"endpoint_url = {endpoint_url}, {authToken}")
+    logger.debug(f"endpoint_url = {endpoint_url}, {authToken}")
     pil_image = Image.open(image_path).convert("RGB")
     b64_image = encode_image(pil_image)
     data = {"b64Image": b64_image, "authToken": authToken}
@@ -162,14 +170,20 @@ def build_bboxes(image_path, label="", dbg_outdir=None):
         mask_np = np.array(pil_mask, dtype=np.uint8)
 
         # heuristic
-        # contour_list, bboxes = get_train_bboxes(mask_np)
-        bboxes = polygon_to_boxes(mask_np, roi_sz = 200)
+        if box_cover_heuristic == "grid":
+            bboxes = polygon_to_boxes(mask_np, roi_sz=200)
+        else:
+            contour_list, bboxes = polygon_to_inscribed_boxes(mask_np)
 
         if dbg_outdir is not None:
+            if not dbg_outdir.exists():
+                dbg_outdir.mkdir(parents=True, exist_ok=True)
             pil_image_dbg = pil_image.copy()
             pil_image_dbg = overlay_mask(pil_image_dbg, mask_np)
-            # draw_gt_boxes(image_dbg, bboxes, label=str(ground_truth))
-            draw_gt_boxes(pil_image_dbg, bboxes, label=label)
+            if len(bboxes) > 0:
+                draw_gt_boxes(
+                    pil_image_dbg, bboxes, human_label=human_label, ai_label=ai_label
+                )
             dbg_path = Path(dbg_outdir) / Path(image_path).stem
             pil_image_dbg.save(f"{dbg_path}.debug.jpg")
 
@@ -265,18 +279,27 @@ def polygon_to_boxes(mask: np.ndarray, roi_sz: int = 100, threshold: float = 0.8
     return bboxes
 
 
-def append_image_path_to_csv(line, csv_fd=None):
+def append_image_path_to_csv(line, csv_header=None, csv_fd=None):
     if csv_fd:
         try:
-            csv_fd.write(f"{line}\n")
-            csv_fd.flush()
-            logger.info(f"Append image info: {line}")
+            if csv_header:
+                fieldnames = csv_header.split(",")
+                writer = csv.DictWriter(csv_fd, fieldnames=fieldnames)
+                writer.writerow(line)
+                csv_fd.flush()
+            else:
+                csv_fd.write(f"{line}\n")
+                csv_fd.flush()
         except Exception as e:
             logger.exception(f"Failed to add image info: {e}")
 
 
 def add_image_to_dataset(
-    full_document, mongo_db, dataset_basedir="staging_dataset", csv_fd=None
+    full_document,
+    mongo_db,
+    dataset_basedir="staging_dataset",
+    csv_header=None,
+    csv_fd=None,
 ):
     """_summary_
 
@@ -285,28 +308,24 @@ def add_image_to_dataset(
     """
 
     try:
+        inspection_id = full_document.get("_id")
         gscs_id = full_document.get("gscs_id")
-        manual_classcode = full_document.get("grade")
 
-        logger.info(f"Processing document with GSCS ID '{gscs_id}'")
+        ai_classcode = full_document.get("result").get("detection").get("classCode")
 
-        # retriev AI inspection with gscs_id
-        ai_inspection = mongo_db.inspections.find_one({"gscs_id": gscs_id})
-        if ai_inspection:
-            inspection_id = ai_inspection.get("_id")
-            ai_label = ai_inspection.get("result", {}).get("detection", {}).get("class")
+        if ai_classcode:
+            ai_class_index, ai_class = scrapRank[ai_classcode]
+            gscs_info = full_document.get("gscs_classification")
+            human_classcode = gscs_info.get("classCode")
+            human_class_index, human_class = scrapRank[human_classcode]
 
-            # Accumulate all images regardless of classification aggrement between AI
-            # and human classifications
-            logger.debug(f"[AI inspection] - {inspection_id} | Action: add to DataSet")
-
-            ground_truth_index, ground_truth_name = scrapRank[manual_classcode]
+            logger.info(f"Inspection {inspection_id}: extract content")
 
             # extract image paths for the inspection points
-            for i in ai_inspection.get("inspections", []):
+            for i in full_document.get("inspections", []):
                 camera, inpath_str = i["inspectionPoint"], i["imagePath"]
 
-                outdir = Path(dataset_basedir) / "images" / ground_truth_name / camera
+                outdir = Path(dataset_basedir) / "images" / human_class / camera
                 annot_dir = Path(str(outdir).replace("/images/", "/labels/"))
                 masks_dir = Path(str(outdir).replace("/images/", "/masks/"))
                 dbg_outdir = Path(str(outdir).replace("/images/", "/debug/"))
@@ -317,36 +336,27 @@ def add_image_to_dataset(
                     inpath_str = inpath_str.replace("D:", "/media/ddcr/sahagun")
                     outdir = str(outdir).replace("\\", "/")
 
-                # add this image and its associated annotated bounding boxes
-                logger.info(f"{camera}: {inpath_str} -> {outdir}")
+                logger.info("Cover truck cargo with bounding boxes")
 
                 inpath = Path(inpath_str)
                 if not (inpath.exists() and inpath.is_file()):
                     raise Exception(f"Missing image file: {inpath_str}")
 
-                logger.info("Segmenting image and fitting bounding boxes")
-
-                if not dbg_outdir.exists():
-                    dbg_outdir.mkdir(parents=True, exist_ok=True)
-
                 img_shape, bboxes_list, mask_pil = build_bboxes(
                     inpath_str,
-                    label=ground_truth_name,
+                    human_label=human_class,
+                    ai_label=ai_class,
                     dbg_outdir=dbg_outdir,
                 )
 
                 if len(bboxes_list) > 0:
-                    logger.debug(
-                        f"Segmentation and bounding box application successful: \n"
-                        f"Found {len(bboxes_list)} bounding boxes for image {inpath_str}"
-                    )
                     # Add segmentation mask to folder
                     masks_dir.mkdir(parents=True, exist_ok=True)
                     mask_file = masks_dir / Path(inpath_str).name
                     mask_file = mask_file.with_suffix(".png")
                     mask_pil.save(mask_file)
 
-                    # copy image file
+                    # copy image file to staging directory
                     copy_file(inpath_str, outdir)
 
                     # Add annotations to folder
@@ -354,18 +364,29 @@ def add_image_to_dataset(
                     annot_file = annot_dir / Path(inpath_str).name
                     annot_file = annot_file.with_suffix(".txt")
                     add_annotation(
-                        bboxes_list, annot_file, img_shape, ground_truth_index
+                        bboxes_list, annot_file, img_shape, human_class_index
                     )
 
                     # Log image info to CSV file
                     dataset_relative_dir = Path(outdir).relative_to(dataset_basedir)
                     relpath = dataset_relative_dir / Path(inpath_str).name
-                    created_at = ai_inspection.get("date")
+                    created_at = full_document.get("date")
                     added_at = datetime.datetime.now()
-                    # image_lineinfo = f"{str(relpath)},{created_at},{camera},{ai_label},{ground_truth_name}"
-                    image_lineinfo = f"{str(relpath)},{camera}, {created_at},{added_at},{ai_label},{ground_truth_name}"
 
-                    append_image_path_to_csv(image_lineinfo, csv_fd=csv_fd)
+                    image_lineinfo = {
+                        "insp_id": inspection_id,
+                        "gscs_id": gscs_id,
+                        "path": str(relpath),
+                        "camera": camera,
+                        "created_at": created_at,
+                        "added_at": added_at,
+                        "ai_class": ai_class,
+                        "human_class": human_class,
+                    }
+                    append_image_path_to_csv(
+                        image_lineinfo, csv_header=csv_header, csv_fd=csv_fd
+                    )
+
                 else:
                     logger.warning(f"No bounding boxes found for image {inpath_str}")
                     failed_outdir = Path(
@@ -379,11 +400,9 @@ def add_image_to_dataset(
 
                     copy_file(inpath_str, failed_outdir)
 
-            logger.info(
-                "Inspection successfully completed and incorporated into the dataset."
-            )
+            logger.info(f"Inspection {inspection_id} incorporated into the dataset.")
         else:
-            logger.warning(f"No AI inspection found for GSCS ID: {gscs_id}")
+            logger.error(f"Inspection '{inspection_id}' has no AI classification.")
     except AppError as e:
         httpReturnCode = e.code
         responseErrorMessage = e.message

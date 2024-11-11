@@ -63,15 +63,29 @@ class ChangesHandler(tornado.websocket.WebSocketHandler):
 
     @classmethod
     def on_change(cls, change):
-        logger.debug(change)
+        if 'fullDocument' in change: #  insert/update/delete
+            change_log = change.copy()
+            change_log.pop('fullDocument')
+            logger.info(change_log)
+        else:
+            logger.info(change)
 
-        change_json = json_util.dumps(change)
-        ChangesHandler.send_updates(change_json)
+        operationType = change.get('operationType')
+        if operationType:
+            if  operationType == 'drop':
+                logger.warning(f"Collection '{change['ns']['db']}.{change['ns']['coll']}' dropped")
+            elif operationType == 'drpDatabase':
+                logger.warning(f"Database '{change['ns']['db']}' dropped")
+            else:
+                if 'updateDescription' in change:
+                    change_json = json_util.dumps(change)
+                    ChangesHandler.send_updates(change_json)
+        else:
+            logger.error("'operationType' not present!")
 
     def relay_trigger_to_clients(self, message):
-        # Prepare the message to be relayed
         relayed_message = json_util.dumps(message)
-        # Send the message to all connected clients except the sender
+        # relay 'message' to all connected clients except the sender
         for client in self.connected_clients:
             if client != self:
                 try:
@@ -176,11 +190,6 @@ def main():
 
     inspections_collection = client.gerdau_scrap_classification.inspections
     loop.add_callback(watch, inspections_collection)
-
-    gscs_classifications_collection = (
-        client.gerdau_scrap_classification.gscs_classifications
-    )
-    loop.add_callback(watch, gscs_classifications_collection)
 
     logger.warning("Started listening ...")
 

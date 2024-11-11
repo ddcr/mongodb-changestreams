@@ -54,7 +54,9 @@ class WebSocketClient:
         self.dataset_dir = dataset_dir
         self.file_path = Path(self.dataset_dir) / file_path
         self.file = None
-        self.csv_header = "path,camera,created_at,added_at,ai_class,human_class"
+        self.csv_header = (
+            "insp_id,gscs_id,path,camera,created_at,added_at,ai_class,human_class"
+        )
 
     def start(self):
         if not Path(self.dataset_dir).exists():
@@ -125,7 +127,8 @@ class WebSocketClient:
         else:
             try:
                 message_json = json_util.loads(message)
-                self.parse_change_stream_event(message_json)
+                if not message_json.get("trigger"):  # bypass ML trigger
+                    self.parse_change_stream_event(message_json)
 
                 # read images.csv into a dataframe e provide some
                 # statistics of the folder content
@@ -149,18 +152,14 @@ class WebSocketClient:
                 )
             finally:
                 # check if dataset is ready for training
-                if not message_json.get("trigger"):  # bypass ML
+                if not message_json.get("trigger"):  # bypass ML trigger
                     res = self.is_dataset_ready()
                     if res:
+                        logger.warning(
+                            "Staging dataset ready for ML training. Trigger Prefect server"
+                        )
                         self.signal_to_ml_workflow({"trigger": "train_ml"})
                         # self.rotate_dataset_directory()
-                    else:
-                        logger.warning(
-                            "Threshold not met: [current_count] images in staging directory."
-                        )
-                        logger.warning(
-                            "Awaiting additional images to trigger ML training workflow."
-                        )
 
     def is_dataset_ready(self):
         """Count images per class"""
@@ -193,83 +192,35 @@ class WebSocketClient:
 
     def parse_change_stream_event(self, change_event):
         operation_type = change_event.get("operationType")
-        event_id = change_event.get("_id")
-        event_docuid = change_event.get("documentKey")
+        event_id = change_event.get("_id").get("_data")
+        inspection_id = change_event.get("documentKey").get("_id")
         if event_id:
-            logger.debug(
+            logger.info(
                 f"Worker: received Change Stream event:\n"
-                f"{'ID:':<10} {event_id}\n"
-                f"{'OP:':<10} {operation_type}\n"
-                f"{'Doc Mongo ID:':<10} {event_docuid}"
+                f"{'Resume token:':<20} {event_id[:20]}\n"
+                f"{'Change Stream OP:':<20} {operation_type}\n"
+                f"{'Inspection ID:':<20} {inspection_id}"
             )
 
-        # verify type of document
-        full_document = change_event.get("fullDocument")
-
-        # handle cases with fullDocument = None
-        if full_document is None:
-            if operation_type == "delete":
-                logger.debug(f"Document with ID {event_docuid} was deleted.")
-            else:
-                logger.warning(
-                    f"Change stream event missing 'fullDocument' for operation type '{operation_type}'.\n"
-                    f"Event details: operationType={operation_type}, documentKey={event_docuid}"
-                )
+        if operation_type == "delete":
+            logger.debug(f"Inspection {inspection_id} was deleted.")
             return
 
-        # proceed with handling based on the content of 'fullDocument'
-        document_origin = full_document.get("origin")
-
-        if document_origin is None:
-            if "need_sync" in full_document:
-                # GSCS entry inserted
-                gscs_id = full_document.get("gscs_id")
-
-                if operation_type == "insert":
-                    logger.debug(
-                        f"[GSCS insertion] - {gscs_id} | Action: Add GSCS initial info"
-                    )
-                elif operation_type == "update":
-                    logger.debug(
-                        f"[GSCI update] - {gscs_id} | Action: Relay to function 'add_image_to_dataset'"
-                    )
-                    add_image_to_dataset(
-                        full_document,
-                        mongo_db,
-                        dataset_basedir=self.dataset_dir,
-                        csv_fd=self.file,
-                    )
-                else:
-                    logger.debug(
-                        f"[GSCS {operation_type}] - {gscs_id} | Action: 'operationType' not handled"
-                    )
-
-        elif document_origin == "/gerdau/scrap_detection/inspect":
-            # inspection classified by AI
-
-            inspection_id = full_document.get("_id")
-            if operation_type == "insert":
-                logger.debug(
-                    f"[AI inspection {operation_type}] - {inspection_id} | Action: Relay to another endpoint"
+        full_document = change_event.get("fullDocument")
+        if full_document:
+            # Mongo change streams with operation type 'insert/update/replace'
+            human_classcode = full_document.get("gscs_classification").get("classCode")
+            if human_classcode:
+                # Inspection with GSCS classification: add to dataset
+                add_image_to_dataset(
+                    full_document,
+                    mongo_db,
+                    dataset_basedir=self.dataset_dir,
+                    csv_header=self.csv_header,
+                    csv_fd=self.file,
                 )
-            elif operation_type in ["update", "replace"]:
-                logger.debug(
-                    f"[AI inspection {operation_type}] - {inspection_id} | Action: 'operationType' not handled"
-                )
-            elif operation_type == "delete":
-                logger.debug(
-                    f"[AI inspection {operation_type}] - {inspection_id} | Document deleted."
-                )
-            else:
-                logger.warning(
-                    f"[AI inspection {operation_type}] - {inspection_id} | Unexpected operation type"
-                )
-
         else:
-            logger.error(
-                "Change Stream Error: Unknown document type detected."
-                "Unable to process the associated document."
-            )
+            logger.warning("Change Stream with no 'fullDocument'")
 
 
 def main():

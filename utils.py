@@ -207,32 +207,70 @@ def getConfig(configStr):
     return configs[configStr]
 
 
-def draw_gt_boxes(image, bboxes, label="", font_size=None):
+def _get_font(image, font_size):
+    # Determine font size based on image dimensions, or use provided size
     fsize = font_size or max(round(sum(image.size) / 2 * 0.035), 10)
-    font = ImageFont.truetype(str(DEFAULT_FONT_PATH), fsize)
+    return ImageFont.truetype(str(DEFAULT_FONT_PATH), fsize)
 
-    lw = max(round(sum(image.size) / 2 * 0.003), 2)
+
+def _get_line_width(image):
+    # Calculate line width for bounding box based on image size
+    return max(round(sum(image.size) / 2 * 0.003), 2)
+
+
+def _draw_label(draw, bbox, label, font, label_position=None):
+    # Position label outside or inside the bounding box based on available space
+    left, top, right, bottom = font.getbbox(label)
+    label_width = right - left
+    label_height = bottom - top
+
+    if label_position is None:
+        label_position = (
+            bbox[0],
+            bbox[1] - label_height if bbox[1] - label_height >= 0 else bbox[1],
+        )
+
+    # Draw label background
+    draw.rectangle(
+        (
+            label_position[0],
+            label_position[1],
+            label_position[0] + label_width + 1,
+            label_position[1] + label_height + 1,
+        ),
+        fill="yellow",
+    )
+
+    # Draw label text
+    draw.text(label_position, label, fill="blue", font=font)
+
+
+def draw_gt_boxes(image, bboxes, human_label=None, ai_label=None, font_size=None):
+    """_summary_
+
+    Arguments:
+        image -- _description_
+        bboxes -- _description_
+
+    Keyword Arguments:
+        human_label -- _description_ (default: {None})
+        ai_label -- _description_ (default: {None})
+        font_size -- _description_ (default: {None})
+    """
+    font = _get_font(image, font_size)
+    line_width = _get_line_width(image)
+
     draw = ImageDraw.Draw(image)
     for bbox in bboxes:
-        draw.rectangle([bbox[0], bbox[1], bbox[2], bbox[3]], outline="yellow", width=lw)
-        if label:
-            p1 = (bbox[0], bbox[1])
-            left, top, right, bottom = font.getbbox(label)
-            w = right - left
-            h = bottom - top
-            outside = p1[1] - h >= 0  # label fits outside box
-            draw.rectangle(
-                (
-                    p1[0],
-                    p1[1] - h if outside else p1[1],
-                    p1[0] + w + 1,
-                    p1[1] + 1 if outside else p1[1] + h + 1,
-                ),
-                fill="yellow",
-            )
-            draw.text(
-                (p1[0], p1[1] - h if outside else p1[1]), label, fill="blue", font=font
-            )
+        draw.rectangle(
+            [bbox[0], bbox[1], bbox[2], bbox[3]], outline="yellow", width=line_width
+        )
+
+        if human_label:
+            _draw_label(draw, bbox, human_label, font)
+
+    if ai_label:  # fixed position for label
+        _draw_label(draw, bbox, f"AI: {str(ai_label)}", font, label_position=(5, 5))
 
 
 def overlay_mask(image, seg_mask):
