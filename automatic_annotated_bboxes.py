@@ -131,7 +131,7 @@ def polygon_to_inscribed_boxes(mask_np, threshold=0.3):
 
     # minimum area for fitting an inscribed rectangle
     min_area = threshold * Polygon(np.squeeze(hull)).area
-    bboxes = get_inscribed_rect_recursive(hull, min_area)
+    bboxes = get_inscribed_rect_recursive(hull, min_area)  # type: ignore
     return contours, bboxes
 
 

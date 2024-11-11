@@ -182,7 +182,10 @@ def convert_raw_dataset_to_yolo_format(
                 img_crop_dst_relpath = img_crop_dst_abspath.relative_to(yolo_basedir)
                 crop_paths.append(str(img_crop_dst_relpath))
 
-    return crop_paths
+    # get the date of the last image
+    latest_inspection = df["added_at"].max()
+
+    return crop_paths, latest_inspection
 
 
 @task(log_prints=True)
@@ -333,7 +336,7 @@ def yolo_workflow(dset_inputdir, images_path):
     shutil.copy(images_path, yolo_datadir / Path(images_path).name)
 
     # === 2 ===
-    crop_images_list = convert_raw_dataset_to_yolo_format(
+    crop_images_list, latest_inspection = convert_raw_dataset_to_yolo_format(
         dset_inputdir, images_path, yolo_datadir
     )
 
@@ -351,7 +354,15 @@ def yolo_workflow(dset_inputdir, images_path):
     # evaluate_model(y_test, predictions)
 
     timestamp_save_model = datetime.datetime.now()
-    model_fpath = yolo_modeldir / f"model_{task_id}.pt"
+    formatted_timestamp = timestamp_save_model.strftime("%Y%m%d")
+    model_fpath = (
+        yolo_modeldir / f"model_{formatted_timestamp}_{task_id}.pt"
+    )
+    # save the date of the latest inpection used in this training session
+    flag_fpath = (
+        yolo_modeldir / f"model_{formatted_timestamp}_{task_id}.flag"
+    )
+    flag_fpath.write_text(f"{latest_inspection}\n")
     save_model(model_obj, model_fpath)
 
 
