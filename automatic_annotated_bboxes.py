@@ -326,9 +326,9 @@ def add_image_to_dataset(
                 camera, inpath_str = i["inspectionPoint"], i["imagePath"]
 
                 outdir = Path(dataset_basedir) / "images" / human_class / camera
-                annot_dir = Path(str(outdir).replace("/images/", "/labels/"))
-                masks_dir = Path(str(outdir).replace("/images/", "/masks/"))
-                dbg_outdir = Path(str(outdir).replace("/images/", "/debug/"))
+                annot_dir = Path(dataset_basedir) / "labels" / human_class / camera
+                masks_dir = Path(dataset_basedir) / "masks" / human_class / camera
+                dbg_outdir = Path(dataset_basedir) / "debug" / human_class / camera
 
                 # The MongoDB instance is installed and running on a Windows-based machine
                 if sys.platform.startswith("linux"):

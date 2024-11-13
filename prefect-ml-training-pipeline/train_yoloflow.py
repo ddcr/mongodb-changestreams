@@ -1,6 +1,7 @@
 import datetime
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import List
 
@@ -17,6 +18,7 @@ from ultralytics import YOLO
 
 script_path = os.path.abspath(__file__)
 WORKING_DIR = os.path.dirname(script_path)
+WIN32 = sys.platform == "win32"
 
 
 def generate_flow_run_name():
@@ -255,7 +257,13 @@ def train_classification_model(
 
     # load a pretrained model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_obj = YOLO(f"{model_variant}.pt").to(device)
+    if WIN32:
+        homedir = os.getenv("USERPROFILE")
+    else:
+        homedir = os.getenv("HOME")
+
+    wgts_file = Path(str(homedir)) / f".yolo/weights/{model_variant}.pt"
+    model_obj = YOLO(wgts_file).to(device)
 
     args = dict(
         data=yolo_datadir,
@@ -324,7 +332,7 @@ def yolo_workflow(dset_inputdir, images_path):
     """
     logger = get_run_logger()
 
-    task_id = prefect.runtime.flow_run.id[:8]
+    task_id = prefect.runtime.flow_run.id[:8]  # type: ignore
     logger.info(f"Started YOLO classification training pipeline ID: {task_id}")
 
     # === 1 ===
@@ -355,16 +363,8 @@ def yolo_workflow(dset_inputdir, images_path):
 
     timestamp_save_model = datetime.datetime.now()
     formatted_timestamp = timestamp_save_model.strftime("%Y%m%d")
-    model_fpath = (
-        yolo_modeldir / f"model_{formatted_timestamp}_{task_id}.pt"
-    )
+    model_fpath = yolo_modeldir / f"model_{formatted_timestamp}_{task_id}.pt"
     # save the date of the latest inpection used in this training session
-    flag_fpath = (
-        yolo_modeldir / f"model_{formatted_timestamp}_{task_id}.flag"
-    )
+    flag_fpath = yolo_modeldir / f"model_{formatted_timestamp}_{task_id}.flag"
     flag_fpath.write_text(f"{latest_inspection}\n")
     save_model(model_obj, model_fpath)
-
-
-if __name__ == "__main__":
-    yolo_workflow()

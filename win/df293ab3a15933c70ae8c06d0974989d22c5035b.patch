@@ -1,0 +1,72 @@
+From df293ab3a15933c70ae8c06d0974989d22c5035b Mon Sep 17 00:00:00 2001
+From: Alex Streed <alex.s@prefect.io>
+Date: Tue, 27 Aug 2024 12:29:31 -0500
+Subject: [PATCH] Fixes `prefect server start` for Windows machines
+
+---
+ src/prefect/cli/server.py | 35 +++++++++++++++++++----------------
+ 1 file changed, 19 insertions(+), 16 deletions(-)
+
+diff --git a/src/prefect/cli/server.py b/src/prefect/cli/server.py
+index 22a4537d8f3f..9f0732f17fb0 100644
+--- a/src/prefect/cli/server.py
++++ b/src/prefect/cli/server.py
+@@ -4,6 +4,7 @@
+ 
+ import logging
+ import os
++import shlex
+ import socket
+ import sys
+ import textwrap
+@@ -39,7 +40,6 @@
+ from prefect.utilities.asyncutils import run_sync_in_worker_thread
+ from prefect.utilities.processutils import (
+     consume_process_output,
+-    get_sys_executable,
+     setup_signal_handlers_server,
+ )
+ 
+@@ -230,24 +230,27 @@ async def start(
+     app.console.print("\n")
+ 
+     try:
++        command = [
++            sys.executable,
++            "-m",
++            "uvicorn",
++            "--app-dir",
++            str(prefect.__module_path__.parent),
++            "--factory",
++            "prefect.server.api.server:create_app",
++            "--host",
++            str(host),
++            "--port",
++            str(port),
++            "--timeout-keep-alive",
++            str(keep_alive_timeout),
++        ]
++        logger.debug("Opening server process with command: %s", shlex.join(command))
+         process = await anyio.open_process(
+-            command=[
+-                get_sys_executable(),
+-                "-m",
+-                "uvicorn",
+-                "--app-dir",
+-                f'"{prefect.__module_path__.parent}"',
+-                "--factory",
+-                "prefect.server.api.server:create_app",
+-                "--host",
+-                str(host),
+-                "--port",
+-                str(port),
+-                "--timeout-keep-alive",
+-                str(keep_alive_timeout),
+-            ],
++            command=command,
+             env=server_env,
+         )
++
+         process_id = process.pid
+         if background:
+             await pid_file.write_text(str(process_id))
