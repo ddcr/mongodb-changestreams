@@ -14,10 +14,10 @@ description: |-
 
   Returns:
       None
-version: 4b14126ec10baa1b2c56505284f468c1
+version: b7d608b4be4e4bb9c3d2ebdc7ec44143
 # The work queue that will handle this deployment's runs
 work_queue_name: default
-work_pool_name: default-agent-pool
+work_pool_name: null
 tags:
 - yolo
 parameters: {}
@@ -25,12 +25,6 @@ schedule: null
 schedules: []
 is_schedule_active: null
 infra_overrides: {}
-
-###
-### DO NOT EDIT BELOW THIS LINE
-###
-flow_name: YOLOv11 classification training
-manifest_path: null
 infrastructure:
   type: process
   env: {}
@@ -39,13 +33,16 @@ infrastructure:
   command: null
   stream_output: true
   working_dir: null
-  _block_document_id: 8b91ac89-8b5f-4851-a123-886e39f27e7e
-  _block_document_name: anonymous-fb9c5dc5-b37f-4012-b8fc-160443643ecb
-  _is_anonymous: true
   block_type_slug: process
   _block_type_slug: process
+
+###
+### DO NOT EDIT BELOW THIS LINE
+###
+flow_name: YOLOv11 classification training
+manifest_path: null
 storage: null
-path: /home/ddcr/ivsn-ddcr-dev/gerdau_scrap_dev/mongodb-changestreams/prefect-ml-training-pipeline
+path: /home/ddcr/ivsn-projs/mongodb-changestreams/prefect-ml-training-pipeline
 entrypoint: train_yoloflow.py:yolo_workflow
 parameter_openapi_schema:
   title: Parameters
@@ -63,6 +60,6 @@ parameter_openapi_schema:
   - dset_inputdir
   - images_path
   definitions: null
-timestamp: '2024-11-12T21:29:46.540621+00:00'
+timestamp: '2024-12-11T16:01:47.085312+00:00'
 triggers: []
 enforce_parameter_schema: null

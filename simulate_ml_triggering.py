@@ -99,7 +99,7 @@ class WebSocketClient:
                 # append this filename to message
                 if snapshot_file:
                     # snapshot_file: get only the final path component
-                    message["images_file_path"] = str(snapshot_file.name)
+                    message["images_csv_path"] = str(snapshot_file.name)
 
                 self.connection.write_message(json_util.dumps(message))
             except Exception as e:

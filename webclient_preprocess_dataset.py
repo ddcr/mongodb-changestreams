@@ -208,7 +208,7 @@ class WebSocketClient:
                         logger.warning(
                             "Staging dataset ready for ML training. Trigger Prefect server"
                         )
-                        self.signal_to_ml_workflow({"trigger": "train_ml"})
+                        self.signal_to_ml_workflow({"trigger": "start_ml"})
                         # self.rotate_dataset_directory()
 
     def is_dataset_ready(self, threshold=50, class_thresholds=None, method="total"):
@@ -249,13 +249,17 @@ class WebSocketClient:
             with lock:
                 shutil.copy2(self.file_path, snapshot_file_path)
                 logger.info(f"Snapshot of 'images.csv' created: {snapshot_file_path}")
+                return snapshot_file_path
         except Exception as e:
             logger.exception(f"Failed to create a snapshot of 'images.csv': {e}")
+            return None
 
     def signal_to_ml_workflow(self, message):
         if self.connection:
             try:
-                self.snapshot_csv_file()
+                snapshot_file = self.snapshot_csv_file()
+                if snapshot_file is not None:
+                    message.update({"images_csv_path": str(snapshot_file.name)})
                 self.connection.write_message(json_util.dumps(message))
             except Exception as e:
                 logger.exception(f"Failed to trigger the ML workflow: {e}")

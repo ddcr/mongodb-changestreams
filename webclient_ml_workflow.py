@@ -99,13 +99,13 @@ class WebSocketClient:
         else:
             message_json = json_util.loads(message)
             if message_json.get("trigger") == "start_ml":
-                images_file_path = message_json.get("images_file_path")
+                images_csv_path = message_json.get("images_csv_path")
                 logger.info("Trigger the ML workflow ...")
-                if images_file_path:
+                if images_csv_path:
                     trigger_prefect_flow(
                         self.deployment_ids,
                         self.staging_dataset_dir,
-                        images_file=images_file_path,
+                        images_file=images_csv_path,
                     )
                 else:
                     trigger_prefect_flow(self.deployment_ids, self.staging_dataset_dir)
@@ -164,7 +164,7 @@ def main():
         "--api-url",
         type=str,
         default="http://127.0.0.1:4200/api",
-        help="URL for the Prefect API endpoint.",
+        help="URL for the Prefect API endpoint [%(default)s].",
     )
 
     parser.add_argument(
@@ -188,6 +188,7 @@ def main():
 
     io_loop = tornado.ioloop.IOLoop.current()
     if args.folder is None:
+        logger.info(f"Staging Dataset Directory: {DATASET_BASEDIR}")
         client = WebSocketClient(io_loop, args.id)
     else:
         client = WebSocketClient(io_loop, args.id, staging_dataset_dir=args.folder)
