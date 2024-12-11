@@ -176,6 +176,7 @@ def update_inspections(mongo_db, force=False):
         raise Exception("Database not connected!")
 
     pending_cls = getPendingClassifications(mongo_db, force=force)
+    logger.info(f"There are {len(pending_cls)} inspections to be updated")
 
     for cls in pending_cls:
         gscs_id = cls['gscs_id']

@@ -141,12 +141,10 @@ def count_files_in_subfolders_efficient(folder_paths):
 
     for folder_path in folder_paths:
         count = 0
-        # Using os.scandir() for better performance
-        with os.scandir(folder_path) as entries:
-            for entry in entries:
-                if entry.is_file():  # Check if the entry is a file
-                    count += 1
-        file_counts[folder_path] = count  # Store the count in the dictionary
+        # Using os.walk() for better performance
+        for _,_, files in os.walk(folder_path):
+            count += len(files)
+        file_counts[folder_path.stem] = count  # Store the count in the dictionary
 
     return file_counts
 

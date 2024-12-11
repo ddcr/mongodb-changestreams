@@ -74,7 +74,7 @@ class ChangesHandler(tornado.websocket.WebSocketHandler):
         if operationType:
             if  operationType == 'drop':
                 logger.warning(f"Collection '{change['ns']['db']}.{change['ns']['coll']}' dropped")
-            elif operationType == 'drpDatabase':
+            elif operationType == 'dropDatabase':
                 logger.warning(f"Database '{change['ns']['db']}' dropped")
             else:
                 if 'updateDescription' in change:

@@ -23,7 +23,7 @@ from filelock import FileLock
 from logzero import logger
 
 from automatic_annotated_bboxes import add_image_to_dataset
-from utils import connect_to_mongo
+from utils import connect_to_mongo, count_files_in_subfolders_efficient
 
 mongo_db = None
 
@@ -33,6 +33,54 @@ else:
     DATASET_BASEDIR = os.getenv(
         "DATASET_DIR", r"D:\ivision\automatic_retraining\staging_dataset"
     )
+
+
+class DatasetChecker:
+    def __init__(
+        self, initial_threshold=50, initial_class_thresholds=None, increment=50
+    ):
+        self.threshold = initial_threshold
+        self.class_thresholds = initial_class_thresholds or {}
+        self.increment = increment
+
+    def is_dataset_ready(self, method="total"):
+        """ """
+        topdir = Path(DATASET_BASEDIR) / "images"
+        if not topdir.exists():
+            return False
+
+        class_folders = [
+            subfolder for subfolder in topdir.iterdir() if subfolder.is_dir()
+        ]
+        class_counts = count_files_in_subfolders_efficient(class_folders)
+        total_counts = sum(class_counts.values())
+
+        logger.info(f"[{total_counts}] {class_counts}")
+
+        # Perform check
+        is_ready = False
+        if method == "total":
+            is_ready = total_counts >= self.threshold
+        elif method == "per_class":
+            is_ready = all(
+                class_counts.get(cls, 0) >= thresh
+                for cls, thresh in self.class_thresholds.items()
+            )
+        # elif method == "both":
+        #     is_ready = total_counts > self.threshold and all(
+        #         class_counts.get(cls, 0) >= thresh for cls, thresh in self.class_thresholds.items()
+        #     )
+
+        # Adjust thresholds if dataset is ready, as to delay the next training trigger
+        if is_ready:
+            self.threshold += self.increment
+            for cls in self.class_thresholds:
+                self.class_thresholds[cls] += self.increment
+            logger.info(
+                f"Thresholds increased to delay next trigger: {self.threshold}, {self.class_thresholds}"
+            )
+
+        return is_ready
 
 
 class WebSocketClient:
@@ -57,6 +105,8 @@ class WebSocketClient:
         self.csv_header = (
             "insp_id,gscs_id,path,camera,created_at,added_at,ai_class,human_class"
         )
+        # TODO: change default parameters, maybe by reading a config.json
+        self.checker = DatasetChecker()
 
     def start(self):
         if not Path(self.dataset_dir).exists():
@@ -153,7 +203,7 @@ class WebSocketClient:
             finally:
                 # check if dataset is ready for training
                 if not message_json.get("trigger"):  # bypass ML trigger
-                    res = self.is_dataset_ready()
+                    res = self.checker.is_dataset_ready(method='total')
                     if res:
                         logger.warning(
                             "Staging dataset ready for ML training. Trigger Prefect server"
@@ -161,9 +211,29 @@ class WebSocketClient:
                         self.signal_to_ml_workflow({"trigger": "train_ml"})
                         # self.rotate_dataset_directory()
 
-    def is_dataset_ready(self):
+    def is_dataset_ready(self, threshold=50, class_thresholds=None, method="total"):
         """Count images per class"""
-        # TODO
+        topdir = Path(DATASET_BASEDIR) / "images"
+        if not topdir.exists():
+            return False
+
+        class_folders = [
+            subfolder for subfolder in topdir.iterdir() if subfolder.is_dir()
+        ]
+        class_counts = count_files_in_subfolders_efficient(class_folders)
+        total_counts = sum(class_counts.values())
+
+        logger.info(f"[{total_counts}] {class_counts}")
+
+        if method == "total":
+            return total_counts > threshold
+
+        if method == "per_class" and class_thresholds:
+            for cls_name, cls_thresh in class_thresholds.items():
+                if class_counts.get(cls_name, 0) < cls_thresh:
+                    return False
+            return True
+
         return False
 
     def snapshot_csv_file(self):
