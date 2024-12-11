@@ -189,7 +189,7 @@ def add_annotation(bboxes, filetxt, img_shape, gt_id):
                 )
 
 
-def load_configs(parPath: str = "config.json"):  # Load configurations
+def load_configs(parPath: str = "config_segmentation.json"):  # Load configurations
     with open(parPath) as config_file:
         configs = json.load(config_file)
     return configs
