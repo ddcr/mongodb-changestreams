@@ -9,10 +9,12 @@ import pandas as pd
 import prefect
 import torch
 from PIL import Image
-from prefect import flow, task
+from prefect import Task, flow, task
+from prefect.client.schemas.objects import TaskRun
 
 # from prefect.client import Client
 from prefect.logging import get_run_logger
+from prefect.states import State
 from sklearn.model_selection import train_test_split
 from ultralytics import YOLO
 
@@ -83,6 +85,10 @@ def move_images(image_list: List[str], yolo_datadir: Path, split_name: str):
             print("Operation not permitted")
         except OSError as e:
             print(e)
+
+
+def train_hook(tsk: Task, run: TaskRun, state: State):
+    print(f"STATE_TRAIN = {state}")
 
 
 @task(name="setup_folder_hierarchy", log_prints=True)
@@ -214,7 +220,7 @@ def data_split(
     # create dataset.yaml to order the scrap classes during training
 
 
-@task(log_prints=True)
+@task(log_prints=True, on_failure=[train_hook])
 def train_classification_model(
     yolo_datadir,
     yolo_rundir,
